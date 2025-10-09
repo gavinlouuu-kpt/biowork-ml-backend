@@ -250,13 +250,9 @@ class NewModel(LabelStudioMLBase):
             from org_api_middleware_v3 import get_credentials_for_task as _get_creds
             if task is not None:
                 hostname, access_token, _ = _get_creds(task)
-                print(f"[DEBUG] Middleware credentials acquired: hostname={hostname}, token={'***' if access_token else None}")
-        except Exception as e:
-            print(f"[DEBUG] Middleware import/call failed: {type(e).__name__}: {e}")
-            import traceback
-            traceback.print_exc()
+        except Exception:
+            pass
 
-        print(f"[DEBUG] Calling get_local_path with: url={image_url}, hostname={hostname}, token={'***' if access_token else None}, task_id={task.get('id') if task else None}")
         image_path = get_local_path(
             image_url,
             access_token=access_token,

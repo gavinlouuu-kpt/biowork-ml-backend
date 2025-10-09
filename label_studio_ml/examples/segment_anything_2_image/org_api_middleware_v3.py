@@ -7,10 +7,10 @@ logger = logging.getLogger(__name__)
 try:
     from ls_ml_backend_SAM_middleware import OrganizationAPIMiddlewareV3 as _OrgV3  # type: ignore
     _EXTERNAL = True
-    logger.info("Successfully imported OrganizationAPIMiddlewareV3 from ls_ml_backend_SAM_middleware")
+    logger.debug("Successfully imported OrganizationAPIMiddlewareV3 from ls_ml_backend_SAM_middleware")
 except Exception as e:
     _EXTERNAL = False
-    logger.warning(f"Failed to import OrganizationAPIMiddlewareV3: {e}")
+    logger.debug(f"Failed to import OrganizationAPIMiddlewareV3: {e}")
 
 _middleware_instance = None
 
@@ -22,14 +22,12 @@ def get_middleware():
     if _EXTERNAL:
         try:
             _middleware_instance = _OrgV3()
-            logger.info(f"Initialized OrganizationAPIMiddlewareV3: {_middleware_instance}")
+            logger.debug(f"Initialized OrganizationAPIMiddlewareV3: {_middleware_instance}")
             return _middleware_instance
         except Exception as e:
             logger.error(f"Failed to initialize OrganizationAPIMiddlewareV3: {e}")
-            import traceback
-            traceback.print_exc()
     # Fallback: lightweight shim that returns env-based creds
-    logger.warning("Using fallback shim for credentials (env-based)")
+    logger.debug("Using fallback shim for credentials (env-based)")
     class _Shim:
         def get_credentials_for_project(self, project_id: int):
             return os.getenv('LABEL_STUDIO_HOST'), os.getenv('LABEL_STUDIO_API_KEY'), 'legacy'
