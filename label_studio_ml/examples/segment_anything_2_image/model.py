@@ -157,6 +157,32 @@ class NewModel(LabelStudioMLBase):
                     'readonly': False
                 })
 
+                # Optional: add a TextArea with mean intensity for the same region
+                if image_path:
+                    mean_intensity = self.calculate_mean_intensity_from_mask(image_path, mask.astype(np.uint8))
+                    if mean_intensity is not None:
+                        textarea_from_name = None
+                        try:
+                            textarea_from_name, _, _ = self.get_first_tag_occurence('TextArea', 'Image')
+                        except Exception:
+                            textarea_from_name = 'mean_intensity'
+                        results.append({
+                            'id': label_id,
+                            'from_name': textarea_from_name,
+                            'to_name': to_name,
+                            'original_width': width,
+                            'original_height': height,
+                            'image_rotation': 0,
+                            'value': {
+                                'format': 'rle',
+                                'rle': rle,
+                                'text': [f"{mean_intensity:.2f}"]
+                            },
+                            'score': prob,
+                            'type': 'textarea',
+                            'readonly': False
+                        })
+
             if response_type in ['polygon', 'both'] and polygon_from_name:
                 polygon_points = self.extract_largest_contour_polygon(mask, width, height, polygon_detail_level)
                 if polygon_points and len(polygon_points) >= 6:
@@ -466,6 +492,19 @@ class NewModel(LabelStudioMLBase):
             if len(rr) == 0:
                 return None
             return float(np.mean(image[rr, cc]))
+        except Exception:
+            return None
+
+    def calculate_mean_intensity_from_mask(self, image_path, binary_mask):
+        try:
+            image = cv2.imread(image_path, cv2.IMREAD_GRAYSCALE)
+            if image is None:
+                return None
+            # Apply the binary mask to get only the pixels within the mask
+            masked_pixels = image[binary_mask > 0]
+            if len(masked_pixels) == 0:
+                return None
+            return float(np.mean(masked_pixels))
         except Exception:
             return None
 
