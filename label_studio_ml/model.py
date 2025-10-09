@@ -128,7 +128,19 @@ class LabelStudioMLBase(ABC):
             extra_params: Extra parameters to set.
 
         """
-        self.set('extra_params', extra_params)
+        try:
+            # Store as JSON string in cache to satisfy cache value type requirements
+            if isinstance(extra_params, (dict, list)):
+                value = json.dumps(extra_params)
+            elif extra_params is None:
+                value = ''
+            else:
+                # Ensure it's a string
+                value = str(extra_params)
+            self.set('extra_params', value)
+        except Exception:
+            # As a last resort, avoid crashing setup; store empty
+            self.set('extra_params', '')
 
     @property
     def extra_params(self):
@@ -138,11 +150,13 @@ class LabelStudioMLBase(ABC):
         Returns:
             json: If parameters exist, returns parameters in JSON format. Else, returns None.
         """
-        # TODO this needs to have exception
         params = self.get('extra_params')
-        if params:
+        if not params:
+            return {}
+        try:
             return json.loads(params)
-        else:
+        except Exception:
+            # Fallback to empty dict if parsing fails
             return {}
             
     def get(self, key: str):
