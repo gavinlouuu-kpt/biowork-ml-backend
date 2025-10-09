@@ -158,6 +158,17 @@ Due to breaking changes from Meta [HERE](https://github.com/facebookresearch/sam
 
 4. Connect running ML backend server to Label Studio: go to your project `Settings -> Machine Learning -> Add Model` and specify `http://localhost:9090` as a URL. Read more in the official [Label Studio documentation](https://labelstud.io/guide/ml#Connect-the-model-to-Label-Studio).
 
+## Environment Setup
+
+1. Copy the `.env` file and configure your environment variables:
+
+```bash
+cp .env .env.local  # Make a local copy for your configuration
+# Edit .env.local with your specific values
+```
+
+The `.env` file contains all configuration options and is automatically loaded by Docker Compose.
+
 ## Running with Docker
 
 1. Start Machine Learning backend on `http://localhost:9090` with prebuilt image:
@@ -177,13 +188,17 @@ $ curl http://localhost:9090/
 
 
 ## Configuration
-Parameters can be set in `docker-compose.yml` before running the container.
-
+Parameters can be set in the `.env` file before running the container. Copy the provided `.env` file and modify the values as needed.
 
 The following common parameters are available:
+- `SAM2_CHOICE` - SAM2 model variant to use: `tiny`, `small`, `base`, or `large` (default: `tiny`)
+  - `tiny`: Fastest, least accurate (good for quick testing)
+  - `small`: Good balance of speed and accuracy
+  - `base`: Better accuracy, slower than small
+  - `large`: Highest accuracy, slowest (requires more GPU memory)
 - `DEVICE` - specify the device for the model server (currently only `cuda` is supported, `cpu` is coming soon)
-- `MODEL_CONFIG` - SAM2 model configuration file (`sam2_hiera_l.yaml` by default)
-- `MODEL_CHECKPOINT` - SAM2 model checkpoint file (`sam2_hiera_large.pt` by default)
+- `MODEL_CONFIG` - SAM2 model configuration file (automatically set based on `SAM2_CHOICE`)
+- `MODEL_CHECKPOINT` - SAM2 model checkpoint file (automatically set based on `SAM2_CHOICE`)
 - `BASIC_AUTH_USER` - specify the basic auth user for the model server
 - `BASIC_AUTH_PASS` - specify the basic auth password for the model server
 - `LOG_LEVEL` - set the log level for the model server
