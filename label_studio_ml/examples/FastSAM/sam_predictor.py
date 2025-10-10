@@ -97,7 +97,7 @@ class SAMPredictor:
         # Import FastSAM components
         try:
             from ultralytics import FastSAM
-            from .fastsam_prompt import FastSAMPrompt  # relative import
+            from fastsam_prompt import FastSAMPrompt
         except Exception as e:
             logger.error(f"Failed to import FastSAM components: {e}")
             raise

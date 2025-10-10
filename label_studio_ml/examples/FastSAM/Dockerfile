@@ -29,6 +29,11 @@ COPY requirements.txt .
 RUN --mount=type=cache,target=${PIP_CACHE_DIR},sharing=locked \
     pip install -r requirements.txt
 
+# Download FastSAM weights into the image to avoid runtime downloads
+RUN mkdir -p /app/models \
+    && wget -O /app/models/FastSAM-x.pt \
+       https://github.com/ultralytics/assets/releases/download/v8.3.0/FastSAM-x.pt
+
 # Test requirements if needed
 COPY requirements-test.txt .
 RUN --mount=type=cache,target=${PIP_CACHE_DIR},sharing=locked \

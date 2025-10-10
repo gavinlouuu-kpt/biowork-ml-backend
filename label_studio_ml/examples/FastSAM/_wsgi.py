@@ -20,35 +20,10 @@ except Exception:
 USE_ORG_MIDDLEWARE = os.getenv('USE_ORG_MIDDLEWARE', 'false').lower() in ('true', '1', 'yes')
 if USE_ORG_MIDDLEWARE:
     try:
-        from org_api_middleware_v3 import OrganizationAPIMiddlewareV3
-        db_type = os.getenv('LABEL_STUDIO_DB_TYPE', '').lower()
-        ls_host = os.getenv('LABEL_STUDIO_HOST')
-        db_host = os.getenv('LABEL_STUDIO_DB_HOST')
-        db_port = os.getenv('LABEL_STUDIO_DB_PORT')
-        db_name = os.getenv('LABEL_STUDIO_DB_NAME')
-        db_user = os.getenv('LABEL_STUDIO_DB_USER')
-        db_password = os.getenv('LABEL_STUDIO_DB_PASSWORD')
-        db_path = os.getenv('LABEL_STUDIO_DB_PATH')
-        if not db_type:
-            if db_host and db_name:
-                db_type = 'postgres'
-            elif db_path:
-                db_type = 'sqlite'
-        if ls_host and (db_type in ('postgres', 'sqlite')):
-            _ = OrganizationAPIMiddlewareV3(
-                db_path=db_path,
-                label_studio_host=ls_host,
-                db_type=db_type,
-                db_host=db_host,
-                db_port=int(db_port) if db_port else None,
-                db_name=db_name,
-                db_user=db_user,
-                db_password=db_password
-            )
-            print("✅ Organization middleware V3 enabled")
-        else:
-            print("⚠️  USE_ORG_MIDDLEWARE=true but missing required environment variables")
-            USE_ORG_MIDDLEWARE = False
+        # Fast path: use provided helper which returns a middleware instance or a shim
+        from org_api_middleware_v3 import get_middleware
+        _ = get_middleware()
+        print("✅ Organization middleware V3 enabled")
     except Exception as e:
         print(f"⚠️  Failed to initialize organization middleware: {e}")
         USE_ORG_MIDDLEWARE = False

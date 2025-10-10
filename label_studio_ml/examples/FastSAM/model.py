@@ -9,7 +9,7 @@ from skimage.draw import polygon as skimage_polygon
 from label_studio_sdk.converter import brush
 from typing import List, Dict, Optional
 from uuid import uuid4
-from .sam_predictor import SAMPredictor, get_credentials_for_task
+from sam_predictor import SAMPredictor, get_credentials_for_task
 from label_studio_ml.model import LabelStudioMLBase
 
 logger = logging.getLogger(__name__)
