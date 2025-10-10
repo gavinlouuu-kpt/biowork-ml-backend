@@ -1,13 +1,11 @@
-version: "3.8"
-
 services:
-  fastsam_backend:
+  fastsam-backend:
     container_name: fastsam-backend
     build:
       context: .
       args:
         TEST_ENV: ${TEST_ENV:-production}
-    image: fastsam-backend:latest
+    image: gavinlouuu/fastsam-backend:latest
     restart: unless-stopped
     deploy:
       resources:
