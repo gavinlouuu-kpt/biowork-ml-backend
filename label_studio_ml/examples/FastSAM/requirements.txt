@@ -1,0 +1,19 @@
+python-dotenv
+opencv-python
+scikit-image
+requests
+psycopg2-binary
+
+# Core LS integration
+label-studio-ml @ git+https://github.com/heartexlabs/label-studio-ml-backend.git
+label-studio-sdk @ git+https://github.com/HumanSignal/label-studio-sdk.git
+
+# FastSAM dependencies
+ultralytics>=8.0.120
+matplotlib>=3.2.2
+PyYAML==6.0.3
+
+# Torch (GPU-enabled base image already ships Torch, but ensure availability for CPU builds)
+torch
+torchvision
+--extra-index-url https://download.pytorch.org/whl/cu126

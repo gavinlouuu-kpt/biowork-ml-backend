@@ -4,6 +4,8 @@ import os
 import sys
 import pathlib
 from typing import List, Dict, Optional
+import json
+import re
 from uuid import uuid4
 from label_studio_ml.model import LabelStudioMLBase
 from label_studio_ml.response import ModelResponse
@@ -113,6 +115,146 @@ def _filter_overlapping_masks_by_iou(masks_data: List[Dict], iou_threshold: floa
 class NewModel(LabelStudioMLBase):
     """Custom ML Backend model
     """
+
+    def setup(self):
+        """Read connection-level overrides from Label Studio extra_params.
+
+        Supports either a JSON object or simple KEY=VALUE pairs separated by newlines or '&'.
+        Stores the connection override for preannotation so it can take precedence over
+        environment defaults during predict calls.
+        """
+        # Default: no connection-level override (use env var)
+        self._conn_preannotate = None
+        self._conn_overrides: Dict[str, object] = {}
+
+        # Read raw stored value; may be JSON or plaintext
+        try:
+            raw_extra = self.get('extra_params')
+        except Exception:
+            raw_extra = None
+
+        extra: Dict[str, object] = {}
+        if isinstance(raw_extra, dict):
+            extra = raw_extra
+        elif isinstance(raw_extra, str):
+            # Try JSON first
+            try:
+                parsed = json.loads(raw_extra)
+                if isinstance(parsed, dict):
+                    extra = parsed
+                else:
+                    extra = {}
+            except Exception:
+                # Fallback: parse KEY=VALUE pairs split by newlines or '&'
+                try:
+                    pairs = re.split(r'[&\n]', raw_extra)
+                    for pair in pairs:
+                        pair = pair.strip()
+                        if '=' in pair:
+                            k, v = pair.split('=', 1)
+                            extra[k.strip()] = v.strip()
+                except Exception:
+                    extra = {}
+
+        def parse_bool(value, default=None):
+            if value is None:
+                return default
+            if isinstance(value, bool):
+                return value
+            if isinstance(value, (int, float)):
+                return bool(value)
+            return str(value).strip().lower() in ('1', 'true', 'yes', 'on')
+
+        # Save connection-level overrides
+        self._conn_overrides = extra
+        # Save dedicated flag (can be True/False or None if not provided)
+        self._conn_preannotate = parse_bool(extra.get('SAM_PREANNOTATE'), None)
+
+    def _resolve_config(self, **kwargs):
+        """Resolve runtime configuration with precedence:
+        kwargs > connection-level extra_params > env defaults.
+        Returns a dict with typed values.
+        """
+        extra = getattr(self, '_conn_overrides', {}) or {}
+
+        def parse_bool(value, default):
+            if value is None:
+                return default
+            if isinstance(value, bool):
+                return value
+            if isinstance(value, (int, float)):
+                return bool(value)
+            return str(value).strip().lower() in ('1', 'true', 'yes', 'on')
+
+        def parse_int(value, default):
+            try:
+                return int(value)
+            except Exception:
+                return default
+
+        def parse_float(value, default):
+            try:
+                return float(value)
+            except Exception:
+                return default
+
+        # Helper that checks lowercase and uppercase keys in overrides
+        def ov(key, default=None):
+            return extra.get(key, extra.get(key.lower(), default))
+
+        # Preannotation flag
+        preannotate = kwargs.get('preannotate', None)
+        if isinstance(preannotate, str):
+            preannotate = preannotate.strip().lower() in ('1', 'true', 'yes', 'on')
+        if preannotate is None:
+            preannotate_flag = parse_bool(ov('SAM_PREANNOTATE', None), SAM_PREANNOTATE)
+        else:
+            preannotate_flag = bool(preannotate)
+
+        # Output controls
+        response_type = kwargs.get('response_type') or ov('RESPONSE_TYPE', RESPONSE_TYPE)
+        if response_type not in ['brush', 'polygon', 'both']:
+            response_type = 'both'
+
+        polygon_detail_level = parse_float(
+            kwargs.get('polygon_detail_level') or ov('POLYGON_DETAIL_LEVEL', POLYGON_DETAIL_LEVEL),
+            POLYGON_DETAIL_LEVEL,
+        )
+        if not (0.0 <= polygon_detail_level <= 0.2):
+            polygon_detail_level = POLYGON_DETAIL_LEVEL
+
+        max_results = parse_int(
+            kwargs.get('max_results') or ov('MAX_RESULTS', MAX_RESULTS),
+            MAX_RESULTS,
+        )
+        max_results = max(1, min(max_results, 1000))
+
+        # AMG parameters
+        points_per_side = parse_int(ov('SAM_AMG_POINTS_PER_SIDE', SAM_AMG_POINTS_PER_SIDE), SAM_AMG_POINTS_PER_SIDE)
+        pred_iou_thresh = parse_float(ov('SAM_AMG_PRED_IOU_THRESH', SAM_AMG_PRED_IOU_THRESH), SAM_AMG_PRED_IOU_THRESH)
+        stability_score_thresh = parse_float(
+            ov('SAM_AMG_STABILITY_SCORE_THRESH', SAM_AMG_STABILITY_SCORE_THRESH),
+            SAM_AMG_STABILITY_SCORE_THRESH,
+        )
+        min_mask_region_area = parse_int(
+            ov('SAM_AMG_MIN_MASK_REGION_AREA', SAM_AMG_MIN_MASK_REGION_AREA),
+            SAM_AMG_MIN_MASK_REGION_AREA,
+        )
+        crop_n_layers = parse_int(ov('SAM_AMG_CROP_N_LAYERS', SAM_AMG_CROP_N_LAYERS), SAM_AMG_CROP_N_LAYERS)
+        nms_iou_thresh = parse_float(ov('SAM_AMG_NMS_IOU_THRESH', SAM_AMG_NMS_IOU_THRESH), SAM_AMG_NMS_IOU_THRESH)
+
+        return {
+            'preannotate': preannotate_flag,
+            'response_type': response_type,
+            'polygon_detail_level': polygon_detail_level,
+            'max_results': max_results,
+            'points_per_side': points_per_side,
+            'pred_iou_thresh': pred_iou_thresh,
+            'stability_score_thresh': stability_score_thresh,
+            'min_mask_region_area': min_mask_region_area,
+            'crop_n_layers': crop_n_layers,
+            'nms_iou_thresh': nms_iou_thresh,
+        }
 
     def get_results(self, masks, probs, width, height, from_name, to_name, label,
                     polygon_from_name: Optional[str] = None,
@@ -305,11 +447,9 @@ class NewModel(LabelStudioMLBase):
 
         # Preannotation path (no context yet)
         if not context or not context.get('result'):
-            preannotate = kwargs.get('preannotate')
-            if isinstance(preannotate, str):
-                preannotate = preannotate.strip().lower() in ('1', 'true', 'yes', 'on')
-            preannotate = bool(preannotate)
-            if not (preannotate or SAM_PREANNOTATE):
+            # Resolve full config for preannotation path
+            cfg = self._resolve_config(**kwargs)
+            if not cfg['preannotate']:
                 return ModelResponse(predictions=[])
 
             img_url = tasks[0]['data'][value]
@@ -334,11 +474,11 @@ class NewModel(LabelStudioMLBase):
 
             generator = SAM2AutomaticMaskGenerator(
                 sam2_model,
-                points_per_side=SAM_AMG_POINTS_PER_SIDE,
-                pred_iou_thresh=SAM_AMG_PRED_IOU_THRESH,
-                stability_score_thresh=SAM_AMG_STABILITY_SCORE_THRESH,
-                min_mask_region_area=SAM_AMG_MIN_MASK_REGION_AREA,
-                crop_n_layers=SAM_AMG_CROP_N_LAYERS,
+                points_per_side=cfg['points_per_side'],
+                pred_iou_thresh=cfg['pred_iou_thresh'],
+                stability_score_thresh=cfg['stability_score_thresh'],
+                min_mask_region_area=cfg['min_mask_region_area'],
+                crop_n_layers=cfg['crop_n_layers'],
                 output_mode='binary_mask',
                 multimask_output=True,
             )
@@ -365,13 +505,13 @@ class NewModel(LabelStudioMLBase):
 
             # IoU-based NMS
             try:
-                masks_data = _filter_overlapping_masks_by_iou(masks_data, SAM_AMG_NMS_IOU_THRESH)
+                masks_data = _filter_overlapping_masks_by_iou(masks_data, cfg['nms_iou_thresh'])
             except Exception:
                 pass
 
             # Cap
-            if MAX_RESULTS > 0:
-                masks_data = masks_data[:MAX_RESULTS]
+            if cfg['max_results'] > 0:
+                masks_data = masks_data[:cfg['max_results']]
 
             masks = []
             probs = []
@@ -401,9 +541,9 @@ class NewModel(LabelStudioMLBase):
                 to_name=to_name,
                 label=selected_label,
                 polygon_from_name=polygon_from_name,
-                response_type=RESPONSE_TYPE,
-                polygon_detail_level=POLYGON_DETAIL_LEVEL,
-                max_results=MAX_RESULTS,
+                response_type=cfg['response_type'],
+                polygon_detail_level=cfg['polygon_detail_level'],
+                max_results=cfg['max_results'],
                 image_path=local_img_path,
             )
             return ModelResponse(predictions=predictions)
