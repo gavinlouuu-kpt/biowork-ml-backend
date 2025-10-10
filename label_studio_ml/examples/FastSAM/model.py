@@ -214,6 +214,21 @@ class SamMLBackend(LabelStudioMLBase):
         results = []
         total_prob = 0
         result_count = 0
+
+        # Resolve valid labels from the controls to avoid "No label" in UI
+        try:
+            brush_control = self.label_interface.get_control(from_name)
+            brush_label_names = list(brush_control.labels_attrs.keys()) if brush_control and brush_control.labels_attrs else []
+            brush_label_value = brush_label_names[0] if brush_label_names else (label or 'Auto')
+        except Exception:
+            brush_label_value = label or 'Auto'
+
+        try:
+            polygon_control = self.label_interface.get_control(polygon_from_name) if polygon_from_name else None
+            polygon_label_names = list(polygon_control.labels_attrs.keys()) if polygon_control and polygon_control.labels_attrs else []
+            polygon_label_value = polygon_label_names[0] if polygon_label_names else (label or 'Auto')
+        except Exception:
+            polygon_label_value = label or 'Auto'
         for mask, prob in zip(masks, probs):
             total_prob += prob
             if result_count >= max_results:
@@ -232,7 +247,7 @@ class SamMLBackend(LabelStudioMLBase):
                     'value': {
                         'format': 'rle',
                         'rle': rle,
-                        'brushlabels': [label],
+                        'brushlabels': [brush_label_value],
                     },
                     'score': prob,
                     'type': 'brushlabels',
@@ -257,7 +272,7 @@ class SamMLBackend(LabelStudioMLBase):
                         'image_rotation': 0,
                         'value': {
                             'points': points_pairs,
-                            'polygonlabels': [label],
+                            'polygonlabels': [polygon_label_value],
                         },
                         'score': prob,
                         'type': 'polygon',
