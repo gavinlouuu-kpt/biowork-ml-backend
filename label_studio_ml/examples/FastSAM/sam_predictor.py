@@ -109,6 +109,8 @@ class SAMPredictor:
 
         # Everything inference (FastSAM produces candidate masks)
         inference_start_time = time.time()
+        # Use MAX_RESULTS from environment to control max detections produced by FastSAM
+        max_detections = int(os.getenv("MAX_RESULTS", "1000"))
         everything_results = self._fastsam_model(
             source=image_path,
             device=self.device,
@@ -116,6 +118,7 @@ class SAMPredictor:
             imgsz=1024,
             conf=0.4,
             iou=0.9,
+            max_det=max_detections,
         )
         logger.debug(f"FastSAM base inference took {time.time() - inference_start_time:.4f}s")
 
@@ -131,6 +134,9 @@ class SAMPredictor:
         masks: List[np.ndarray] = []
         probs: List[float] = []
         if ann is not None and len(ann) > 0:
+            # DEBUG: Log the raw number of masks from FastSAM
+            logger.debug(f"DEBUG: FastSAM generated {len(ann)} raw masks")
+            
             for mask in ann:
                 if hasattr(mask, 'cpu'):
                     mask = mask.cpu().numpy()
@@ -142,6 +148,9 @@ class SAMPredictor:
             logger.warning("FastSAM: No masks generated")
             return {"masks": [], "probs": []}
 
+        # DEBUG: Log the final number of masks after processing
+        logger.debug(f"DEBUG: Final masks count after processing: {len(masks)}")
+        
         logger.debug(f"FastSAM prediction completed in {time.time() - predict_start_time:.4f}s")
         return {"masks": masks, "probs": probs}
 

@@ -34,8 +34,8 @@ logging.config.dictConfig({
   "version": 1,
   "disable_existing_loggers": False,
   "formatters": {"standard": {"format": "[%(asctime)s] [%(levelname)s] [%(name)s::%(funcName)s::%(lineno)d] %(message)s"}},
-  "handlers": {"console": {"class": "logging.StreamHandler", "level": os.getenv('LOG_LEVEL', 'INFO'), "stream": "ext://sys.stdout", "formatter": "standard"}},
-  "root": {"level": os.getenv('LOG_LEVEL', 'INFO'), "handlers": ["console"], "propagate": True}
+  "handlers": {"console": {"class": "logging.StreamHandler", "level": os.getenv('LOG_LEVEL', 'DEBUG'), "stream": "ext://sys.stdout", "formatter": "standard"}},
+  "root": {"level": os.getenv('LOG_LEVEL', 'DEBUG'), "handlers": ["console"], "propagate": True}
 })
 
 from label_studio_ml.api import init_app

@@ -18,7 +18,7 @@ services:
       - .env
     environment:
       - USE_ORG_MIDDLEWARE=true
-      - LOG_LEVEL=INFO
+      - LOG_LEVEL=DEBUG
     ports:
       - "9090:9090"
     volumes:

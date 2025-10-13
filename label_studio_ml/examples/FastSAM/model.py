@@ -29,11 +29,19 @@ class SamMLBackend(LabelStudioMLBase):
         response_type = kwargs.get('response_type') or RESPONSE_TYPE
         polygon_detail_level = float(kwargs.get('polygon_detail_level') or POLYGON_DETAIL_LEVEL)
         max_results = int(kwargs.get('max_results') or MAX_RESULTS)
+        
+        # DEBUG: Log the environment variable values
+        logger.debug(f"DEBUG: get_runtime_config - MAX_RESULTS env={MAX_RESULTS}, RESPONSE_TYPE env={RESPONSE_TYPE}")
+        
         if response_type not in ['brush', 'polygon', 'both']:
             response_type = 'both'
         if not (0.0 <= polygon_detail_level <= 0.2):
             polygon_detail_level = 0.002
         max_results = max(1, min(max_results, 1000))
+        
+        # DEBUG: Log the final computed values
+        logger.debug(f"DEBUG: get_runtime_config - final max_results={max_results}, response_type={response_type}")
+        
         return response_type, polygon_detail_level, max_results
 
     def get_predictor(self):
@@ -45,7 +53,10 @@ class SamMLBackend(LabelStudioMLBase):
     def predict(self, tasks: List[Dict], context: Optional[Dict] = None, **kwargs) -> List[Dict]:
         inference_start_time = time.time()
         response_type, polygon_detail_level, max_results = self.get_runtime_config(**kwargs)
-
+        
+        # DEBUG: Log the runtime configuration
+        logger.debug(f"DEBUG: predict called with max_results={max_results}, response_type={response_type}")
+        
         from_name, to_name, value = self.get_first_tag_occurence('BrushLabels', 'Image')
         polygon_from_name = None
         try:
@@ -211,6 +222,10 @@ class SamMLBackend(LabelStudioMLBase):
             polygon_detail_level = POLYGON_DETAIL_LEVEL
         if max_results is None:
             max_results = MAX_RESULTS
+        
+        # DEBUG: Log the max_results value and number of input masks
+        logger.debug(f"DEBUG: get_results called with max_results={max_results}, input masks count={len(masks)}")
+        
         results = []
         total_prob = 0
         result_count = 0
@@ -229,9 +244,15 @@ class SamMLBackend(LabelStudioMLBase):
             polygon_label_value = polygon_label_names[0] if polygon_label_names else (label or 'Auto')
         except Exception:
             polygon_label_value = label or 'Auto'
+            
+        # DEBUG: Log before processing masks
+        logger.debug(f"DEBUG: Starting mask processing, total masks available: {len(masks)}")
+            
         for mask, prob in zip(masks, probs):
             total_prob += prob
             if result_count >= max_results:
+                # DEBUG: Log when we hit the max_results limit
+                logger.debug(f"DEBUG: Reached max_results limit ({max_results}), stopping processing")
                 break
             if response_type in ['brush', 'both']:
                 label_id = str(uuid4())[:4]
@@ -301,6 +322,14 @@ class SamMLBackend(LabelStudioMLBase):
                             'readonly': False
                         })
             result_count += 1
+            
+            # DEBUG: Log progress every 50 masks
+            if result_count % 50 == 0:
+                logger.debug(f"DEBUG: Processed {result_count} masks so far")
+        
+        # DEBUG: Log final results count
+        logger.debug(f"DEBUG: Final results count: {len(results)}, total masks processed: {result_count}")
+        
         return [{
             'result': results,
             'model_version': self.get('model_version'),
