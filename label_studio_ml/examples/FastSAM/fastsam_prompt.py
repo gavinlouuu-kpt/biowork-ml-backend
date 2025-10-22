@@ -103,12 +103,28 @@ class FastSAMPrompt:
         if self.results is None:
             return []
         masks = self._format_results(self.results[0], 0)
+        if not masks:
+            return []
         target_height = self.img.shape[0]
         target_width = self.img.shape[1]
         h = masks[0]['segmentation'].shape[0]
         w = masks[0]['segmentation'].shape[1]
         if h != target_height or w != target_width:
             points = [[int(point[0] * w / target_width), int(point[1] * h / target_height)] for point in points]
+
+        # Filter out-of-bounds points strictly; don't clamp
+        valid_points = []
+        valid_labels = []
+        for i, pt in enumerate(points):
+            xi = int(pt[0])
+            yi = int(pt[1])
+            if 0 <= xi < w and 0 <= yi < h:
+                valid_points.append([xi, yi])
+                valid_labels.append(pointlabel[i])
+        if not valid_points:
+            return []
+        points = valid_points
+        pointlabel = valid_labels
         onemask = np.zeros((h, w))
         masks = sorted(masks, key=lambda x: x['area'], reverse=True)
         for annotation in masks:

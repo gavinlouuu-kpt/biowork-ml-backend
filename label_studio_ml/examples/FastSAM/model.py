@@ -11,6 +11,7 @@ from typing import List, Dict, Optional
 from uuid import uuid4
 from sam_predictor import SAMPredictor, get_credentials_for_task
 from label_studio_ml.model import LabelStudioMLBase
+from PIL import Image, ImageOps
 
 logger = logging.getLogger(__name__)
 
@@ -116,24 +117,58 @@ class SamMLBackend(LabelStudioMLBase):
         # Interactive prompts
         image_width = context['result'][0]['original_width']
         image_height = context['result'][0]['original_height']
+
+        # Resolve EXIF-corrected image dimensions to convert percents → pixels reliably
+        img_url = tasks[0]['data'][value]
+        true_width, true_height = image_width, image_height
+        try:
+            hostname, access_token = get_credentials_for_task(tasks[0])
+            _local_img_for_dims = self.get_local_path(
+                img_url,
+                ls_host=hostname,
+                ls_access_token=access_token,
+                task_id=tasks[0].get('id')
+            )
+            _pil = Image.open(_local_img_for_dims)
+            _pil = ImageOps.exif_transpose(_pil)
+            true_width, true_height = _pil.size
+        except Exception:
+            # Fall back to context dims if local image can't be opened
+            true_width, true_height = image_width, image_height
         point_coords = []
         point_labels = []
         input_box = None
         selected_label = None
         for ctx in context['result']:
-            x = ctx['value']['x'] * image_width / 100
-            y = ctx['value']['y'] * image_height / 100
+            # Convert Label Studio percentage coords using EXIF-corrected dimensions
+            x = ctx['value']['x'] * true_width / 100
+            y = ctx['value']['y'] * true_height / 100
             ctx_type = ctx['type']
             selected_label = ctx['value'][ctx_type][0]
             if ctx_type == 'keypointlabels':
+                xi, yi = int(x), int(y)
+                # Strict validation: if any point is outside, ignore the interaction
+                if not (0 <= xi < true_width and 0 <= yi < true_height):
+                    logger.debug(
+                        f"Ignored OOB click (x={xi}, y={yi}) for task={tasks[0].get('id')} within image={true_width}x{true_height}"
+                    )
+                    return []
                 point_labels.append(int(ctx.get('is_positive', 0)))
-                point_coords.append([int(x), int(y)])
+                point_coords.append([xi, yi])
             elif ctx_type == 'rectanglelabels':
-                box_width = ctx['value']['width'] * image_width / 100
-                box_height = ctx['value']['height'] * image_height / 100
-                input_box = [int(x), int(y), int(box_width + x), int(box_height + y)]
+                box_width = ctx['value']['width'] * true_width / 100
+                box_height = ctx['value']['height'] * true_height / 100
+                x1, y1 = int(x), int(y)
+                x2, y2 = int(box_width + x), int(box_height + y)
+                # Validate rectangle is fully inside and non-empty
+                if not (0 <= x1 < x2 <= true_width and 0 <= y1 < y2 <= true_height):
+                    logger.debug(
+                        f"Ignored OOB rectangle ({x1},{y1},{x2},{y2}) for task={tasks[0].get('id')} within image={true_width}x{true_height}"
+                    )
+                    return []
+                input_box = [x1, y1, x2, y2]
 
-        img_path = tasks[0]['data'][value]
+        img_path = img_url
         predictor = self.get_predictor()
         predictor_results = predictor.predict(
             img_path=img_path,
