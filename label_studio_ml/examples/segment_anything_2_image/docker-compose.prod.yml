@@ -1,7 +1,6 @@
-name: sam2-backend-dev
 services:
   sam2-backend:
-    container_name: sam2-backend-dev
+    container_name: sam2-backend
     image: gavinlouuu/sam2-backend:v0
     build:
       context: .
@@ -18,13 +17,13 @@ services:
 
 
     env_file:
-      - .env.development
+      - .env
     ports:
-      - "9091:9090"
+      - "9093:9090"
     volumes:
-      - "./data/server-dev:/data"
+      - "./data/server:/data"
     networks:
-      - label-studio-dev-network
+      - label-studio-network
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:9090/health"]
       interval: 30s
@@ -33,5 +32,5 @@ services:
       start_period: 40s
 
 networks:
-  label-studio-dev-network:
+  label-studio-network:
     external: true
