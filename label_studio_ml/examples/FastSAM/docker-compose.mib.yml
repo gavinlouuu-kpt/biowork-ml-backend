@@ -1,10 +1,6 @@
-
-
-name: fastsam-backend-dev
-
 services:
   fastsam-backend:
-    container_name: fastsam-backend-dev
+    container_name: fastsam-backend
     build:
       context: .
       args:
@@ -19,17 +15,17 @@ services:
               count: 1
               capabilities: [ gpu ]
     env_file:
-      - .env.development
+      - .env
     environment:
       - USE_ORG_MIDDLEWARE=true
       - LOG_LEVEL=DEBUG
     ports:
-      - "9092:9090"
+      - "9090:9090"
     volumes:
-      - "./data/server-dev:/data"
-      - "./.env.development:/app/.env:ro"
+      - "./data/server:/data"
+      - "./.env:/app/.env:ro"
     networks:
-      - label-studio-dev-network
+      - label-studio-network
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:9090/health"]
       interval: 30s
@@ -38,5 +34,5 @@ services:
       start_period: 40s
 
 networks:
-  label-studio-dev-network:
+  label-studio-network:
     external: true
