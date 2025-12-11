@@ -58,12 +58,25 @@ class SamMLBackend(LabelStudioMLBase):
         # DEBUG: Log the runtime configuration
         logger.debug(f"DEBUG: predict called with max_results={max_results}, response_type={response_type}")
         
-        from_name, to_name, value = self.get_first_tag_occurence('BrushLabels', 'Image')
-        polygon_from_name = None
+        # Discover controls; prefer brush if present, but support polygon-only configs
         try:
-            polygon_from_name, _, _ = self.get_first_tag_occurence('PolygonLabels', 'Image')
+            from_name, to_name, value = self.get_first_tag_occurence('BrushLabels', 'Image')
+        except Exception:
+            from_name = to_name = value = None
+
+        polygon_from_name = None
+        polygon_value = None
+        polygon_to_name = None
+        try:
+            polygon_from_name, polygon_to_name, polygon_value = self.get_first_tag_occurence('PolygonLabels', 'Image')
         except Exception:
             polygon_from_name = from_name
+            polygon_to_name = to_name
+
+        # If no brush tag exists, fall back to polygon for image value/to_name
+        if value is None and polygon_value is not None:
+            value = polygon_value
+            to_name = polygon_to_name or to_name or 'image'
 
         # No interaction yet: FastSAM everything/auto
         if not context or not context.get('result'):
@@ -103,7 +116,7 @@ class SamMLBackend(LabelStudioMLBase):
                 width=image_width,
                 height=image_height,
                 from_name=from_name,
-                to_name=to_name,
+                to_name=to_name or polygon_to_name,
                 label='Auto',
                 polygon_from_name=polygon_from_name,
                 response_type=response_type,
@@ -178,14 +191,13 @@ class SamMLBackend(LabelStudioMLBase):
             task=tasks[0]
         )
 
-        # Local path for mean intensity when polygons requested
+        # Local path for mean intensity for polygons/brush
         local_img_path = None
-        if response_type in ['polygon', 'both']:
-            try:
-                hostname, access_token = get_credentials_for_task(tasks[0])
-                local_img_path = self.get_local_path(img_path, ls_host=hostname, ls_access_token=access_token, task_id=tasks[0].get('id'))
-            except Exception:
-                local_img_path = None
+        try:
+            hostname, access_token = get_credentials_for_task(tasks[0])
+            local_img_path = self.get_local_path(img_path, ls_host=hostname, ls_access_token=access_token, task_id=tasks[0].get('id'))
+        except Exception:
+            local_img_path = None
 
         predictions = self.get_results(
             masks=predictor_results['masks'],
@@ -205,9 +217,47 @@ class SamMLBackend(LabelStudioMLBase):
         logger.debug(f"Total inference time: {time.time() - inference_start_time:.4f}s")
         return predictions
 
+    def _load_image_for_intensity(self, image_path):
+        image = cv2.imread(image_path, cv2.IMREAD_UNCHANGED)
+        if image is None:
+            return None
+        if image.ndim == 2:
+            return image
+        if image.ndim == 3:
+            if image.shape[2] == 4:
+                return cv2.cvtColor(image, cv2.COLOR_BGRA2BGR)
+            return image
+        return None
+
+    def _compute_mean_intensity_channels(self, image, mask_bool):
+        if mask_bool.sum() == 0:
+            return {'gray': 0.0, 'r': 0.0, 'g': 0.0, 'b': 0.0}
+        if image.ndim == 2:
+            mean_gray = float(np.mean(image[mask_bool]))
+            return {'gray': mean_gray, 'r': 0.0, 'g': 0.0, 'b': 0.0}
+
+        # Color image: gray channel fixed to 0.0
+        b, g, r = cv2.split(image)
+        mean_r = float(np.mean(r[mask_bool]))
+        mean_g = float(np.mean(g[mask_bool]))
+        mean_b = float(np.mean(b[mask_bool]))
+        return {'gray': 0.0, 'r': mean_r, 'g': mean_g, 'b': mean_b}
+
+    def _format_mean_intensity_text(self, mean_dict):
+        """Return a deterministic string showing all channels."""
+        if mean_dict is None:
+            return None
+        if isinstance(mean_dict, (int, float)):
+            mean_dict = {'gray': float(mean_dict), 'r': 0.0, 'g': 0.0, 'b': 0.0}
+        gray = mean_dict.get('gray', 0.0)
+        r = mean_dict.get('r', 0.0)
+        g = mean_dict.get('g', 0.0)
+        b = mean_dict.get('b', 0.0)
+        return f"gray={gray:.2f}; r={r:.2f}; g={g:.2f}; b={b:.2f}"
+
     def calculate_mean_intensity(self, image_path, polygon_points, width, height):
         try:
-            image = cv2.imread(image_path, cv2.IMREAD_GRAYSCALE)
+            image = self._load_image_for_intensity(image_path)
             if image is None:
                 return None
             pixel_coords = []
@@ -219,16 +269,29 @@ class SamMLBackend(LabelStudioMLBase):
                 pixel_coords.append([x_pixel, y_pixel])
             if len(pixel_coords) < 3:
                 return None
+            mask = np.zeros(image.shape[:2], dtype=bool)
             x_coords = [coord[0] for coord in pixel_coords]
             y_coords = [coord[1] for coord in pixel_coords]
-            rr, cc = skimage_polygon(y_coords, x_coords, shape=image.shape)
-            valid = (rr >= 0) & (rr < image.shape[0]) & (cc >= 0) & (cc < image.shape[1])
-            rr = rr[valid]
-            cc = cc[valid]
-            if len(rr) == 0:
+            rr, cc = skimage_polygon(y_coords, x_coords, shape=mask.shape)
+            valid = (rr >= 0) & (rr < mask.shape[0]) & (cc >= 0) & (cc < mask.shape[1])
+            mask[rr[valid], cc[valid]] = True
+            if not mask.any():
                 return None
-            polygon_pixels = image[rr, cc]
-            return float(np.mean(polygon_pixels))
+            return self._compute_mean_intensity_channels(image, mask)
+        except Exception:
+            return None
+
+    def calculate_mean_intensity_from_mask(self, image_path, binary_mask):
+        try:
+            image = self._load_image_for_intensity(image_path)
+            if image is None:
+                return None
+            mask_bool = (binary_mask.astype(np.uint8) > 0)
+            if mask_bool.shape != image.shape[:2]:
+                mask_bool = cv2.resize(mask_bool.astype(np.uint8), (image.shape[1], image.shape[0]), interpolation=cv2.INTER_NEAREST).astype(bool)
+            if not mask_bool.any():
+                return None
+            return self._compute_mean_intensity_channels(image, mask_bool)
         except Exception:
             return None
 
@@ -309,6 +372,31 @@ class SamMLBackend(LabelStudioMLBase):
                     'type': 'brushlabels',
                     'readonly': False
                 })
+                if image_path:
+                    mean_intensity = self.calculate_mean_intensity_from_mask(image_path, mask.astype(np.uint8))
+                    mean_text = self._format_mean_intensity_text(mean_intensity)
+                    if mean_text:
+                        textarea_from_name = None
+                        try:
+                            textarea_from_name, _, _ = self.get_first_tag_occurence('TextArea', 'Image')
+                        except Exception:
+                            textarea_from_name = 'mean_intensity'
+                        results.append({
+                            'id': label_id,
+                            'from_name': textarea_from_name,
+                            'to_name': to_name,
+                            'original_width': width,
+                            'original_height': height,
+                            'image_rotation': 0,
+                            'value': {
+                                'format': 'rle',
+                                'rle': rle,
+                                'text': [mean_text]
+                            },
+                            'score': prob,
+                            'type': 'textarea',
+                            'readonly': False
+                        })
             if response_type in ['polygon', 'both'] and polygon_from_name:
                 polygon_points = self.extract_largest_contour_polygon(mask, width, height, polygon_detail_level)
                 if polygon_points and len(polygon_points) >= 6:
@@ -335,7 +423,8 @@ class SamMLBackend(LabelStudioMLBase):
                         'readonly': False
                     }
                     results.append(polygon_result)
-                    if mean_intensity is not None:
+                    mean_text = self._format_mean_intensity_text(mean_intensity)
+                    if mean_text:
                         textarea_from_name = None
                         try:
                             textarea_from_name, _, _ = self.get_first_tag_occurence('TextArea', 'Image')
@@ -350,7 +439,7 @@ class SamMLBackend(LabelStudioMLBase):
                             'image_rotation': 0,
                             'value': {
                                 'points': points_pairs,
-                                'text': [f"{mean_intensity:.2f}"]
+                                'text': [mean_text]
                             },
                             'score': prob,
                             'type': 'textarea',

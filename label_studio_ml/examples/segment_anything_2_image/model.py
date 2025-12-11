@@ -302,7 +302,8 @@ class NewModel(LabelStudioMLBase):
                 # Optional: add a TextArea with mean intensity for the same region
                 if image_path:
                     mean_intensity = self.calculate_mean_intensity_from_mask(image_path, mask.astype(np.uint8))
-                    if mean_intensity is not None:
+                    mean_text = self._format_mean_intensity_text(mean_intensity)
+                    if mean_text:
                         textarea_from_name = None
                         try:
                             textarea_from_name, _, _ = self.get_first_tag_occurence('TextArea', 'Image')
@@ -318,7 +319,7 @@ class NewModel(LabelStudioMLBase):
                             'value': {
                                 'format': 'rle',
                                 'rle': rle,
-                                'text': [f"{mean_intensity:.2f}"]
+                                'text': [mean_text]
                             },
                             'score': prob,
                             'type': 'textarea',
@@ -354,7 +355,8 @@ class NewModel(LabelStudioMLBase):
                     # Optional: add a TextArea with mean intensity for the same region
                     if image_path:
                         mean_intensity = self.calculate_mean_intensity(image_path, polygon_points, width, height)
-                        if mean_intensity is not None:
+                        mean_text = self._format_mean_intensity_text(mean_intensity)
+                        if mean_text:
                             textarea_from_name = None
                             try:
                                 textarea_from_name, _, _ = self.get_first_tag_occurence('TextArea', 'Image')
@@ -369,7 +371,7 @@ class NewModel(LabelStudioMLBase):
                                 'image_rotation': 0,
                                 'value': {
                                     'points': points_pairs,
-                                    'text': [f"{mean_intensity:.2f}"]
+                                    'text': [mean_text]
                                 },
                                 'score': prob,
                                 'type': 'textarea',
@@ -609,9 +611,55 @@ class NewModel(LabelStudioMLBase):
         
         return ModelResponse(predictions=predictions)
 
+    def _load_image_for_intensity(self, image_path):
+        """Load image preserving channels and normalizing alpha to BGR."""
+        image = cv2.imread(image_path, cv2.IMREAD_UNCHANGED)
+        if image is None:
+            return None
+        if image.ndim == 2:
+            return image
+        if image.ndim == 3:
+            if image.shape[2] == 4:
+                return cv2.cvtColor(image, cv2.COLOR_BGRA2BGR)
+            return image
+        return None
+
+    def _compute_mean_intensity_channels(self, image, mask_bool):
+        """Compute gray and RGB channel means for provided boolean mask.
+
+        - For RGB images: return gray=0.0 and r/g/b channel means.
+        - For grayscale images: return gray mean and r/g/b = 0.0.
+        """
+        if mask_bool.sum() == 0:
+            return {'gray': 0.0, 'r': 0.0, 'g': 0.0, 'b': 0.0}
+
+        if image.ndim == 2:
+            mean_gray = float(np.mean(image[mask_bool]))
+            return {'gray': mean_gray, 'r': 0.0, 'g': 0.0, 'b': 0.0}
+
+        # Color image
+        b, g, r = cv2.split(image)
+        mean_r = float(np.mean(r[mask_bool]))
+        mean_g = float(np.mean(g[mask_bool]))
+        mean_b = float(np.mean(b[mask_bool]))
+        return {'gray': 0.0, 'r': mean_r, 'g': mean_g, 'b': mean_b}
+
+    def _format_mean_intensity_text(self, mean_dict):
+        """Return a deterministic string showing all channels."""
+        if mean_dict is None:
+            return None
+        # Accept legacy float by wrapping it as gray-only
+        if isinstance(mean_dict, (int, float)):
+            mean_dict = {'gray': float(mean_dict), 'r': 0.0, 'g': 0.0, 'b': 0.0}
+        gray = mean_dict.get('gray', 0.0)
+        r = mean_dict.get('r', 0.0)
+        g = mean_dict.get('g', 0.0)
+        b = mean_dict.get('b', 0.0)
+        return f"gray={gray:.2f}; r={r:.2f}; g={g:.2f}; b={b:.2f}"
+
     def calculate_mean_intensity(self, image_path, polygon_points, width, height):
         try:
-            image = cv2.imread(image_path, cv2.IMREAD_GRAYSCALE)
+            image = self._load_image_for_intensity(image_path)
             if image is None:
                 return None
             pixel_coords = []
@@ -623,28 +671,29 @@ class NewModel(LabelStudioMLBase):
                 pixel_coords.append([x_pixel, y_pixel])
             if len(pixel_coords) < 3:
                 return None
+            mask = np.zeros(image.shape[:2], dtype=bool)
             x_coords = [pt[0] for pt in pixel_coords]
             y_coords = [pt[1] for pt in pixel_coords]
-            rr, cc = skimage_polygon(y_coords, x_coords, shape=image.shape)
-            valid = (rr >= 0) & (rr < image.shape[0]) & (cc >= 0) & (cc < image.shape[1])
-            rr = rr[valid]
-            cc = cc[valid]
-            if len(rr) == 0:
+            rr, cc = skimage_polygon(y_coords, x_coords, shape=mask.shape)
+            valid = (rr >= 0) & (rr < mask.shape[0]) & (cc >= 0) & (cc < mask.shape[1])
+            mask[rr[valid], cc[valid]] = True
+            if not mask.any():
                 return None
-            return float(np.mean(image[rr, cc]))
+            return self._compute_mean_intensity_channels(image, mask)
         except Exception:
             return None
 
     def calculate_mean_intensity_from_mask(self, image_path, binary_mask):
         try:
-            image = cv2.imread(image_path, cv2.IMREAD_GRAYSCALE)
+            image = self._load_image_for_intensity(image_path)
             if image is None:
                 return None
-            # Apply the binary mask to get only the pixels within the mask
-            masked_pixels = image[binary_mask > 0]
-            if len(masked_pixels) == 0:
+            mask_bool = (binary_mask.astype(np.uint8) > 0)
+            if mask_bool.shape != image.shape[:2]:
+                mask_bool = cv2.resize(mask_bool.astype(np.uint8), (image.shape[1], image.shape[0]), interpolation=cv2.INTER_NEAREST).astype(bool)
+            if not mask_bool.any():
                 return None
-            return float(np.mean(masked_pixels))
+            return self._compute_mean_intensity_channels(image, mask_bool)
         except Exception:
             return None
 
