@@ -612,12 +612,19 @@ class NewModel(LabelStudioMLBase):
         return ModelResponse(predictions=predictions)
 
     def _load_image_for_intensity(self, image_path):
-        """Load image preserving channels and normalizing alpha to BGR."""
+        """
+        Load image for intensity computation, normalizing to a 3-channel BGR image.
+
+        - Grayscale images are converted with cv2.COLOR_GRAY2BGR so that
+          downstream code always sees three channels where grayscale corresponds
+          to r=g=b.
+        - BGRA images are converted to BGR.
+        """
         image = cv2.imread(image_path, cv2.IMREAD_UNCHANGED)
         if image is None:
             return None
         if image.ndim == 2:
-            return image
+            return cv2.cvtColor(image, cv2.COLOR_GRAY2BGR)
         if image.ndim == 3:
             if image.shape[2] == 4:
                 return cv2.cvtColor(image, cv2.COLOR_BGRA2BGR)
@@ -625,37 +632,75 @@ class NewModel(LabelStudioMLBase):
         return None
 
     def _compute_mean_intensity_channels(self, image, mask_bool):
-        """Compute gray and RGB channel means for provided boolean mask.
+        """
+        Compute RGB channel means for provided boolean mask.
 
-        - For RGB images: return gray=0.0 and r/g/b channel means.
-        - For grayscale images: return gray mean and r/g/b = 0.0.
+        All images are expected to be 3-channel BGR; grayscale input is handled
+        by having r=g=b for the region. The returned dict encodes only RGB
+        channels; grayscale can be inferred when r≈g≈b.
         """
         if mask_bool.sum() == 0:
-            return {'gray': 0.0, 'r': 0.0, 'g': 0.0, 'b': 0.0}
+            return {'r': 0.0, 'g': 0.0, 'b': 0.0}
 
+        # Defensive handling in case a 2D image slips through
         if image.ndim == 2:
-            mean_gray = float(np.mean(image[mask_bool]))
-            return {'gray': mean_gray, 'r': 0.0, 'g': 0.0, 'b': 0.0}
+            mean_val = float(np.mean(image[mask_bool]))
+            return {'r': mean_val, 'g': mean_val, 'b': mean_val}
 
-        # Color image
-        b, g, r = cv2.split(image)
-        mean_r = float(np.mean(r[mask_bool]))
-        mean_g = float(np.mean(g[mask_bool]))
-        mean_b = float(np.mean(b[mask_bool]))
-        return {'gray': 0.0, 'r': mean_r, 'g': mean_g, 'b': mean_b}
+        if image.ndim == 3:
+            if image.shape[2] == 1:
+                mean_val = float(np.mean(image[mask_bool]))
+                return {'r': mean_val, 'g': mean_val, 'b': mean_val}
+            b, g, r = cv2.split(image)
+            mean_r = float(np.mean(r[mask_bool]))
+            mean_g = float(np.mean(g[mask_bool]))
+            mean_b = float(np.mean(b[mask_bool]))
+            return {'r': mean_r, 'g': mean_g, 'b': mean_b}
+
+        # Fallback: unexpected image shape
+        return {'r': 0.0, 'g': 0.0, 'b': 0.0}
 
     def _format_mean_intensity_text(self, mean_dict):
-        """Return a deterministic string showing all channels."""
+        """
+        Return a deterministic RGB-only string for textarea storage.
+
+        The backend now emits only per-channel RGB means. Grayscale / black and
+        white regions are represented by r=g=b; no separate gray channel is
+        stored in the text.
+        """
         if mean_dict is None:
             return None
-        # Accept legacy float by wrapping it as gray-only
+        # Legacy float: treat as grayscale encoded as r=g=b=value.
         if isinstance(mean_dict, (int, float)):
-            mean_dict = {'gray': float(mean_dict), 'r': 0.0, 'g': 0.0, 'b': 0.0}
-        gray = mean_dict.get('gray', 0.0)
-        r = mean_dict.get('r', 0.0)
-        g = mean_dict.get('g', 0.0)
-        b = mean_dict.get('b', 0.0)
-        return f"gray={gray:.2f}; r={r:.2f}; g={g:.2f}; b={b:.2f}"
+            val = float(mean_dict)
+            r = g = b = val
+            return f"r={r:.2f}; g={g:.2f}; b={b:.2f}"
+
+        if isinstance(mean_dict, dict):
+            r = mean_dict.get('r')
+            g = mean_dict.get('g')
+            b = mean_dict.get('b')
+
+            # Legacy gray-only dict: use gray as r=g=b if RGB are missing.
+            if r is None and g is None and b is None:
+                gray = mean_dict.get('gray')
+                if gray is None:
+                    return None
+                r = g = b = float(gray)
+            else:
+                r = 0.0 if r is None else float(r)
+                g = 0.0 if g is None else float(g)
+                b = 0.0 if b is None else float(b)
+
+            return f"r={r:.2f}; g={g:.2f}; b={b:.2f}"
+
+        # Unexpected type: best-effort float coercion
+        try:
+            val = float(mean_dict)
+        except Exception:
+            return None
+        r = g = b = val
+        return f"r={r:.2f}; g={g:.2f}; b={b:.2f}"
 
     def calculate_mean_intensity(self, image_path, polygon_points, width, height):
         try:
