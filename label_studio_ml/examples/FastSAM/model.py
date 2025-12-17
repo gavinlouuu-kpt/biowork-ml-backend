@@ -268,49 +268,6 @@ class SamMLBackend(LabelStudioMLBase):
         # Fallback: unexpected image shape
         return {'r': 0.0, 'g': 0.0, 'b': 0.0}
 
-    def _format_mean_intensity_text(self, mean_dict):
-        """
-        Return a deterministic RGB-only string for textarea storage.
-
-        The backend now emits only per-channel RGB means. Grayscale / black and
-        white regions are represented by r=g=b; no separate gray channel is
-        stored in the text.
-        """
-        if mean_dict is None:
-            return None
-
-        # Legacy float: treat as grayscale encoded as r=g=b=value.
-        if isinstance(mean_dict, (int, float)):
-            val = float(mean_dict)
-            r = g = b = val
-            return f"r={r:.2f}; g={g:.2f}; b={b:.2f}"
-
-        if isinstance(mean_dict, dict):
-            r = mean_dict.get('r')
-            g = mean_dict.get('g')
-            b = mean_dict.get('b')
-
-            # Legacy gray-only dict: use gray as r=g=b if RGB are missing.
-            if r is None and g is None and b is None:
-                gray = mean_dict.get('gray')
-                if gray is None:
-                    return None
-                r = g = b = float(gray)
-            else:
-                r = 0.0 if r is None else float(r)
-                g = 0.0 if g is None else float(g)
-                b = 0.0 if b is None else float(b)
-
-            return f"r={r:.2f}; g={g:.2f}; b={b:.2f}"
-
-        # Unexpected type: best-effort float coercion
-        try:
-            val = float(mean_dict)
-        except Exception:
-            return None
-        r = g = b = val
-        return f"r={r:.2f}; g={g:.2f}; b={b:.2f}"
-
     def calculate_mean_intensity(self, image_path, polygon_points, width, height):
         try:
             image = self._load_image_for_intensity(image_path)
@@ -350,7 +307,53 @@ class SamMLBackend(LabelStudioMLBase):
             return self._compute_mean_intensity_channels(image, mask_bool)
         except Exception:
             return None
+    
+    def _compute_mask_geometry(self, mask):
+        """
+        Compute simple geometry stats for a binary mask in **pixel** units.
 
+        Returns a dict suitable for the `meta` field on Label Studio results:
+
+        {
+            "area": <int>,                # number of pixels inside the mask
+            "bbox": {
+                "x": <int>,              # left (min x) pixel
+                "y": <int>,              # top (min y) pixel
+                "width": <int>,          # width in pixels
+                "height": <int>,         # height in pixels
+            }
+        }
+        or None if the mask is empty.
+        """
+        if mask is None:
+            return None
+
+        mask_bool = (mask.astype(np.uint8) > 0)
+        if not mask_bool.any():
+            return None
+
+        ys, xs = np.nonzero(mask_bool)
+        if xs.size == 0 or ys.size == 0:
+            return None
+
+        x_min = int(xs.min())
+        x_max = int(xs.max()) + 1
+        y_min = int(ys.min())
+        y_max = int(ys.max()) + 1
+
+        width_px = x_max - x_min
+        height_px = y_max - y_min
+        area_px = int(mask_bool.sum())
+
+        return {
+            "area": area_px,
+            "bbox": {
+                "x": x_min,
+                "y": y_min,
+                "width": width_px,
+                "height": height_px,
+            },
+        }
     def extract_largest_contour_polygon(self, mask, width, height, detail_level=None):
         if detail_level is None:
             detail_level = POLYGON_DETAIL_LEVEL
@@ -408,11 +411,14 @@ class SamMLBackend(LabelStudioMLBase):
                 # DEBUG: Log when we hit the max_results limit
                 logger.debug(f"DEBUG: Reached max_results limit ({max_results}), stopping processing")
                 break
+            
+            # Geometry in **pixels** for this mask, reused across all results for it
+            geometry_meta = self._compute_mask_geometry(mask)
             if response_type in ['brush', 'both']:
                 label_id = str(uuid4())[:4]
                 mask_rle = (mask * 255).astype(np.uint8)
                 rle = brush.mask2rle(mask_rle)
-                results.append({
+                brush_result = {
                     'id': label_id,
                     'from_name': from_name,
                     'to_name': to_name,
@@ -426,33 +432,37 @@ class SamMLBackend(LabelStudioMLBase):
                     },
                     'score': prob,
                     'type': 'brushlabels',
-                    'readonly': False
-                })
+                    'readonly': False,
+                }
+
+                # Merge geometry stats and RGB mean intensities into `meta`
+                meta = dict(geometry_meta) if geometry_meta is not None else {}
                 if image_path:
                     mean_intensity = self.calculate_mean_intensity_from_mask(image_path, mask.astype(np.uint8))
-                    mean_text = self._format_mean_intensity_text(mean_intensity)
-                    if mean_text:
-                        textarea_from_name = None
+                    if isinstance(mean_intensity, dict):
                         try:
-                            textarea_from_name, _, _ = self.get_first_tag_occurence('TextArea', 'Image')
+                            r_val = float(mean_intensity.get('r', 0.0))
                         except Exception:
-                            textarea_from_name = 'mean_intensity'
-                        results.append({
-                            'id': label_id,
-                            'from_name': textarea_from_name,
-                            'to_name': to_name,
-                            'original_width': width,
-                            'original_height': height,
-                            'image_rotation': 0,
-                            'value': {
-                                'format': 'rle',
-                                'rle': rle,
-                                'text': [mean_text]
-                            },
-                            'score': prob,
-                            'type': 'textarea',
-                            'readonly': False
+                            r_val = 0.0
+                        try:
+                            g_val = float(mean_intensity.get('g', 0.0))
+                        except Exception:
+                            g_val = 0.0
+                        try:
+                            b_val = float(mean_intensity.get('b', 0.0))
+                        except Exception:
+                            b_val = 0.0
+                        meta.update({
+                            "mean_r": r_val,
+                            "mean_g": g_val,
+                            "mean_b": b_val,
                         })
+
+                if meta:
+                    brush_result['meta'] = meta
+
+                results.append(brush_result)
+
             if response_type in ['polygon', 'both'] and polygon_from_name:
                 polygon_points = self.extract_largest_contour_polygon(mask, width, height, polygon_detail_level)
                 if polygon_points and len(polygon_points) >= 6:
@@ -476,31 +486,33 @@ class SamMLBackend(LabelStudioMLBase):
                         },
                         'score': prob,
                         'type': 'polygon',
-                        'readonly': False
+                        'readonly': False,
                     }
-                    results.append(polygon_result)
-                    mean_text = self._format_mean_intensity_text(mean_intensity)
-                    if mean_text:
-                        textarea_from_name = None
+                    # Merge geometry stats and RGB mean intensities into `meta`
+                    meta = dict(geometry_meta) if geometry_meta is not None else {}
+                    if isinstance(mean_intensity, dict):
                         try:
-                            textarea_from_name, _, _ = self.get_first_tag_occurence('TextArea', 'Image')
+                            r_val = float(mean_intensity.get('r', 0.0))
                         except Exception:
-                            textarea_from_name = 'mean_intensity'
-                        results.append({
-                            'id': polygon_label_id,
-                            'from_name': textarea_from_name,
-                            'to_name': to_name,
-                            'original_width': width,
-                            'original_height': height,
-                            'image_rotation': 0,
-                            'value': {
-                                'points': points_pairs,
-                                'text': [mean_text]
-                            },
-                            'score': prob,
-                            'type': 'textarea',
-                            'readonly': False
+                            r_val = 0.0
+                        try:
+                            g_val = float(mean_intensity.get('g', 0.0))
+                        except Exception:
+                            g_val = 0.0
+                        try:
+                            b_val = float(mean_intensity.get('b', 0.0))
+                        except Exception:
+                            b_val = 0.0
+                        meta.update({
+                            "mean_r": r_val,
+                            "mean_g": g_val,
+                            "mean_b": b_val,
                         })
+
+                    if meta:
+                        polygon_result['meta'] = meta
+
+                    results.append(polygon_result)
             result_count += 1
             
             # DEBUG: Log progress every 50 masks
