@@ -24,9 +24,17 @@ services:
     volumes:
       - "./data/server-dev:/data"
     networks:
-      - label-studio-dev-network
+      label-studio-dev-network:
+        aliases:
+          - sam2-backend
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:9090/health"]
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://localhost:9090/health', timeout=5)",
+        ]
       interval: 30s
       timeout: 10s
       retries: 3

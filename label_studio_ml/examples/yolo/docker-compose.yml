@@ -1,8 +1,8 @@
-version: "3.8"
+name: yolo-backend-dev
 
 services:
   yolo:
-    container_name: yolo
+    container_name: yolo-backend-dev
     image: humansignal/yolo:v0
     build:
       context: .
@@ -29,7 +29,7 @@ services:
       # Use prefix 'http://' or 'https://' for the URL always.
       # Determine the actual IP using 'ifconfig' (Linux/Mac) or 'ipconfig' (Windows).
       # or you can try http://host.docker.internal:<label-studio-port> if you run LS on the same machine
-      - LABEL_STUDIO_HOST=${LABEL_STUDIO_HOST:-http://host.docker.internal:8080}
+      - LABEL_STUDIO_HOST=${LABEL_STUDIO_HOST:-http://label-studio-app-dev:8000}
       - LABEL_STUDIO_API_KEY=${LABEL_STUDIO_API_KEY}
 
       # YOLO parameters
@@ -46,8 +46,28 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"  # for macos and unix      
     ports:
-      - "9090:9090"
+      - "9094:9090"
     volumes:
       - "./data/server:/data"
       - "./models:/app/models"
       - "./cache_dir:/app/cache_dir"
+    networks:
+      label-studio-dev-network:
+        aliases:
+          - yolo-backend
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://localhost:9090/health', timeout=5)",
+        ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+networks:
+  label-studio-dev-network:
+    external: true

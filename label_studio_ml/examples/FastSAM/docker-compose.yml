@@ -24,14 +24,22 @@ services:
       - USE_ORG_MIDDLEWARE=true
       - LOG_LEVEL=DEBUG
     ports:
-      - "9092:9090"
+      - "9096:9090"
     volumes:
       - "./data/server-dev:/data"
       - "./.env.development:/app/.env:ro"
     networks:
-      - label-studio-dev-network
+      label-studio-dev-network:
+        aliases:
+          - fastsam-backend
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:9090/health"]
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://localhost:9090/health', timeout=5)",
+        ]
       interval: 30s
       timeout: 10s
       retries: 3

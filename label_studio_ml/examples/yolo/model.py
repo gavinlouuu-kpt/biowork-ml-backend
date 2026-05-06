@@ -33,10 +33,11 @@ available_model_classes = [
 
 class YOLO(LabelStudioMLBase):
     """Label Studio ML Backend based on Ultralytics YOLO"""
+    MODEL_VERSION = "yolo"
 
     def setup(self):
         """Configure any parameters of your model here"""
-        self.set("model_version", "yolo")
+        self.set("model_version", self.MODEL_VERSION)
 
     def detect_control_models(self) -> List[ControlModel]:
         """Detect control models based on the labeling config.

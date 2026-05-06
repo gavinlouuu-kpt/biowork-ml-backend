@@ -189,3 +189,9 @@ def test_control_with_valid_label_map(
     assert len(result) == 1
     assert result[0] == mock_instance
     mock_logger.debug.assert_called_once()
+
+
+def test_setup_sets_lowercase_model_version():
+    yolo = YOLO()
+    yolo.setup()
+    assert yolo.get("model_version") == "yolo"

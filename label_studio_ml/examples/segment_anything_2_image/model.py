@@ -116,6 +116,19 @@ class NewModel(LabelStudioMLBase):
     """Custom ML Backend model
     """
 
+    def _empty_prediction_response(self) -> ModelResponse:
+        """Return a non-error empty prediction envelope.
+
+        Label Studio's model test endpoint treats `predictions=[]` as an error.
+        Returning one prediction with an empty `result` keeps interactive SAM
+        behavior intact while allowing connectivity tests to pass.
+        """
+        return ModelResponse(predictions=[{
+            'result': [],
+            'model_version': self.get('model_version'),
+            'score': 0.0,
+        }])
+
     def setup(self):
         """Read connection-level overrides from Label Studio extra_params.
 
@@ -457,7 +470,7 @@ class NewModel(LabelStudioMLBase):
             # Resolve full config for preannotation path
             cfg = self._resolve_config(**kwargs)
             if not cfg['preannotate']:
-                return ModelResponse(predictions=[])
+                return self._empty_prediction_response()
 
             img_url = tasks[0]['data'][value]
             access_token = None
@@ -476,7 +489,7 @@ class NewModel(LabelStudioMLBase):
             )
             image = cv2.imread(local_img_path)
             if image is None:
-                return ModelResponse(predictions=[])
+                return self._empty_prediction_response()
             image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
 
             generator = SAM2AutomaticMaskGenerator(
@@ -528,7 +541,7 @@ class NewModel(LabelStudioMLBase):
                     probs.append(float(md.get('predicted_iou', 0.0)))
 
             if not masks:
-                return ModelResponse(predictions=[])
+                return self._empty_prediction_response()
 
             height, width = image.shape[:2]
             # Choose a label (first BrushLabel name)
