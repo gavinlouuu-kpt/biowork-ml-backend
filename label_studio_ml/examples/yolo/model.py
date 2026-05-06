@@ -12,6 +12,7 @@ from control_models.polygon_labels import PolygonLabelsModel
 from control_models.keypoint_labels import KeypointLabelsModel
 from control_models.video_rectangle import VideoRectangleModel
 from control_models.timeline_labels import TimelineLabelsModel
+from training import YoloAutoTrainer
 from typing import List, Dict, Optional
 
 
@@ -36,8 +37,12 @@ class YOLO(LabelStudioMLBase):
     MODEL_VERSION = "yolo"
 
     def setup(self):
-        """Configure any parameters of your model here"""
-        self.set("model_version", self.MODEL_VERSION)
+        """Configure model defaults.
+        Keep a trained model_version if one already exists.
+        """
+        current = self.get("model_version")
+        if not current or current == self.INITIAL_MODEL_VERSION:
+            self.set("model_version", self.MODEL_VERSION)
 
     def detect_control_models(self) -> List[ControlModel]:
         """Detect control models based on the labeling config.
@@ -46,6 +51,12 @@ class YOLO(LabelStudioMLBase):
         control_models = []
 
         for control in self.label_interface.controls:
+            active_model_path = (self.get("active_model_path") or "").strip()
+            if active_model_path and not control.attr.get("model_path"):
+                # Auto-trained checkpoints become the default inference model
+                # unless a control explicitly sets model_path.
+                control.attr["model_path"] = active_model_path
+
             # skipping tags without toName
             if not control.to_name:
                 logger.warning(
@@ -136,10 +147,12 @@ class YOLO(LabelStudioMLBase):
         This method is called each time an annotation is created or updated.
         Or it's called when "Start training" clicked on the model in the project settings.
         """
-        results = {}
-        control_models = self.detect_control_models()
-        for model in control_models:
-            training_result = model.fit(event, data, **kwargs)
-            results[model.from_name] = training_result
+        if event != "START_TRAINING":
+            return {
+                "status": "ignored",
+                "reason": "YOLO training runs on START_TRAINING only",
+                "event": event,
+            }
 
-        return results
+        trainer = YoloAutoTrainer(self)
+        return trainer.run(event, data)

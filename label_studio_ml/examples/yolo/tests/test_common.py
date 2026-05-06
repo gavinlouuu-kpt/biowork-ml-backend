@@ -195,3 +195,22 @@ def test_setup_sets_lowercase_model_version():
     yolo = YOLO()
     yolo.setup()
     assert yolo.get("model_version") == "yolo"
+
+
+def test_setup_keeps_existing_trained_model_version():
+    yolo = YOLO()
+    yolo.set("model_version", "yolo-auto-detect-20260101_000000")
+    yolo.setup()
+    assert yolo.get("model_version") == "yolo-auto-detect-20260101_000000"
+
+
+def test_train_endpoint_calls_fit(client, mocker):
+    fit_mock = mocker.patch("model.YOLO.fit", return_value={"status": "trained"})
+    request = {
+        "project": "42.111",
+        "label_config": "<View><Image name='image' value='$image'/></View>",
+        "annotations": [],
+    }
+    response = client.post("/train", data=json.dumps(request), content_type="application/json")
+    assert response.status_code == 201
+    fit_mock.assert_called_once()

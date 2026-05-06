@@ -96,14 +96,39 @@ def _setup():
     project_id = data.get('project').split('.', 1)[0]
     label_config = data.get('schema')
     extra_params = data.get('extra_params')
+    hostname = data.get('hostname')
+    access_token = data.get('access_token')
     model = MODEL_CLASS(project_id=project_id,
                         label_config=label_config)
 
     if extra_params:
         model.set_extra_params(extra_params)
+    if hostname:
+        model.set("ls_host", hostname)
+    if access_token:
+        model.set("ls_access_token", access_token)
 
     model_version = model.get('model_version')
     return jsonify({'model_version': model_version})
+
+
+@_server.route('/train', methods=['POST'])
+@exception_handler
+def _train():
+    """Legacy train endpoint used by Label Studio ML API connector."""
+    data = request.json or {}
+    project = str(data.get('project'))
+    project_id = project.split('.', 1)[0] if project else None
+    label_config = data.get('label_config')
+
+    model = MODEL_CLASS(project_id=project_id, label_config=label_config)
+    result = model.fit("START_TRAINING", data)
+
+    try:
+        response = jsonify({'result': result, 'status': 'ok'})
+    except Exception as e:
+        response = jsonify({'error': str(e), 'status': 'error'})
+    return response, 201
 
 
 TRAIN_EVENTS = (
