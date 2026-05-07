@@ -14,6 +14,7 @@ class KeypointLabelsModel(ControlModel):
     model_path = (
         "yolov8n-pose.pt"  # Adjust the model path to your keypoint detection model
     )
+    compatible_model_tasks = ("pose",)
     add_bboxes: bool = True
     point_size: float = 1
     point_threshold: float = 0

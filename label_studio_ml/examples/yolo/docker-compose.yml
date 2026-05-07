@@ -65,6 +65,7 @@ services:
       - YOLO_TRAIN_BASE_MODEL_SEGMENT=${YOLO_TRAIN_BASE_MODEL_SEGMENT:-yolov8n-seg.pt}
     extra_hosts:
       - "host.docker.internal:host-gateway"  # for macos and unix      
+    gpus: all
     ports:
       - "9094:9090"
     volumes:

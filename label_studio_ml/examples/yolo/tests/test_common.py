@@ -9,6 +9,8 @@ import json
 
 from unittest.mock import MagicMock, patch
 from model import YOLO
+from control_models.keypoint_labels import KeypointLabelsModel
+from control_models.rectangle_labels import RectangleLabelsModel
 
 
 def load_file(path):
@@ -202,6 +204,37 @@ def test_setup_keeps_existing_trained_model_version():
     yolo.set("model_version", "yolo-auto-detect-20260101_000000")
     yolo.setup()
     assert yolo.get("model_version") == "yolo-auto-detect-20260101_000000"
+
+
+def test_detect_checkpoint_skips_keypoint_control(mock_ml_backend):
+    fake_model = MagicMock()
+    fake_model.task = "detect"
+    fake_model.names = {0: "Object"}
+    fake_object = MagicMock(tag="Image", value_name="image")
+    keypoint_control = MagicMock(
+        tag="KeyPointLabels",
+        name="tag3",
+        to_name=["image"],
+        objects=[fake_object],
+        attr={"model_path": "autotrain/project_226/best.pt"},
+    )
+    rectangle_control = MagicMock(
+        tag="RectangleLabels",
+        name="tag4",
+        to_name=["image"],
+        objects=[fake_object],
+        attr={"model_path": "autotrain/project_226/best.pt"},
+    )
+    mock_ml_backend.build_label_map.return_value = {"Object": "Object"}
+
+    with patch.object(KeypointLabelsModel, "get_cached_model", return_value=fake_model):
+        assert KeypointLabelsModel.create(mock_ml_backend, keypoint_control) is None
+
+    with patch.object(RectangleLabelsModel, "get_cached_model", return_value=fake_model):
+        rectangle_model = RectangleLabelsModel.create(mock_ml_backend, rectangle_control)
+
+    assert rectangle_model is not None
+    assert rectangle_model.from_name == "tag4"
 
 
 def test_train_endpoint_calls_fit(client, mocker):

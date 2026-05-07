@@ -22,6 +22,7 @@ class RectangleLabelsModel(ControlModel):
 
     type = "RectangleLabels"
     model_path = "yolov8m.pt"
+    compatible_model_tasks = ("detect",)
 
     @classmethod
     def is_control_matched(cls, control) -> bool:

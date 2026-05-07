@@ -27,6 +27,7 @@ class TimelineLabelsModel(ControlModel):
 
     type = "TimelineLabels"
     model_path = "yolov8n-cls.pt"
+    compatible_model_tasks = ("classify",)
     trainable: bool = False
 
     @classmethod
@@ -39,6 +40,8 @@ class TimelineLabelsModel(ControlModel):
     @classmethod
     def create(cls, *args, **kwargs):
         instance = super().create(*args, **kwargs)
+        if instance is None:
+            return None
 
         # timeline models can be trainable and based on YOLO trained classes directly
         instance.trainable = get_bool(instance.control.attr, "model_trainable", "false")

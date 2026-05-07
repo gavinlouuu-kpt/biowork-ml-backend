@@ -25,6 +25,7 @@ services:
       - MODEL_ROOT=/app/models
     extra_hosts:
       - "host.docker.internal:host-gateway"
+    gpus: all
     ports:
       - "9095:9090"
     volumes:

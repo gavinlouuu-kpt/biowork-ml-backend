@@ -18,6 +18,7 @@ class RectangleLabelsObbModel(ControlModel):
 
     type = "RectangleLabels"
     model_path = "yolov8n-obb.pt"
+    compatible_model_tasks = ("obb",)
 
     @classmethod
     def is_control_matched(cls, control) -> bool:

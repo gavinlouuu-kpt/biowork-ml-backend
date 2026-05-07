@@ -15,6 +15,7 @@ class ChoicesModel(ControlModel):
 
     type = "Choices"
     model_path = "yolov8n-cls.pt"
+    compatible_model_tasks = ("classify",)
 
     @classmethod
     def is_control_matched(cls, control) -> bool:

@@ -20,6 +20,7 @@ class VideoRectangleModel(ControlModel):
 
     type = "VideoRectangle"
     model_path = "yolov8n.pt"
+    compatible_model_tasks = ("detect",)
 
     @classmethod
     def is_control_matched(cls, control: ControlTag) -> bool:

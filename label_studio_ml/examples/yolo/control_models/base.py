@@ -2,7 +2,7 @@ import os
 import logging
 
 from pydantic import BaseModel
-from typing import Optional, List, Dict, ClassVar
+from typing import Optional, List, Dict, ClassVar, Tuple
 from ultralytics import YOLO
 
 from label_studio_ml.model import LabelStudioMLBase
@@ -57,6 +57,7 @@ class ControlModel(BaseModel):
     value: str
     model: YOLO
     model_path: ClassVar[str]
+    compatible_model_tasks: ClassVar[Tuple[str, ...]] = ()
     model_score_threshold: float = 0.5
     label_map: Optional[Dict[str, str]] = {}
     label_studio_ml_backend: LabelStudioMLBase
@@ -111,6 +112,19 @@ class ControlModel(BaseModel):
         ) or cls.model_path
 
         model = cls.get_cached_model(model_path)
+        model_overrides = getattr(model, "overrides", {}) or {}
+        model_task = getattr(model, "task", None) or model_overrides.get("task")
+        if cls.compatible_model_tasks and model_task not in cls.compatible_model_tasks:
+            logger.info(
+                "Skipping control tag '%s' with name '%s': model '%s' task '%s' is not compatible with %s",
+                control.tag,
+                from_name,
+                model_path,
+                model_task,
+                cls.type,
+            )
+            return None
+
         model_names = model.names.values()  # class names from the model
         # from_name for label mapping can be differed from control.name (e.g. VideoRectangle)
         label_map_from_name = cls.get_from_name_for_label_map(

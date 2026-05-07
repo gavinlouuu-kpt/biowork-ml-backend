@@ -14,6 +14,7 @@ class PolygonLabelsModel(ControlModel):
 
     type = "PolygonLabels"
     model_path = "yolov8n-seg.pt"
+    compatible_model_tasks = ("segment",)
 
     @classmethod
     def is_control_matched(cls, control) -> bool:
