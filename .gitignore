@@ -134,3 +134,6 @@ dmypy.json
 .github/actions-hub
 
 .idea/
+
+# YOLO auto-generated training data
+label_studio_ml/examples/yolo/data/

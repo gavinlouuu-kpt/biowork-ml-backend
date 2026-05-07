@@ -8,7 +8,12 @@ services:
       context: .
       args:
         TEST_ENV: ${TEST_ENV}
+    env_file:
+      - .env.development
     environment:
+      # Organization middleware toggle
+      - USE_ORG_MIDDLEWARE=true
+
       # specify these parameters if you want to use basic auth for the model server
       - BASIC_AUTH_USER=
       - BASIC_AUTH_PASS=
@@ -23,14 +28,19 @@ services:
       - MODEL_DIR=/data/models
       - PYTHONPATH=/app
 
-      # Specify the Label Studio URL and API key to access
-      # uploaded, local storage and cloud storage files.
-      # Do not use 'localhost' or '127.0.0.1' as it does not work within Docker containers.
-      # Use prefix 'http://' or 'https://' for the URL always.
-      # Determine the actual IP using 'ifconfig' (Linux/Mac) or 'ipconfig' (Windows).
-      # or you can try http://host.docker.internal:<label-studio-port> if you run LS on the same machine
+      # Label Studio connection
+      # The middleware auto-resolves API tokens from the Label Studio database,
+      # so LABEL_STUDIO_API_KEY is not needed when USE_ORG_MIDDLEWARE=true.
       - LABEL_STUDIO_HOST=${LABEL_STUDIO_HOST:-http://label-studio-app-dev:8000}
-      - LABEL_STUDIO_API_KEY=${LABEL_STUDIO_API_KEY}
+      - LABEL_STUDIO_API_KEY=${LABEL_STUDIO_API_KEY:-}
+
+      # Middleware database connection (PostgreSQL)
+      - LABEL_STUDIO_DB_TYPE=${LABEL_STUDIO_DB_TYPE:-postgres}
+      - LABEL_STUDIO_DB_HOST=${LABEL_STUDIO_DB_HOST:-db-dev}
+      - LABEL_STUDIO_DB_PORT=${LABEL_STUDIO_DB_PORT:-5432}
+      - LABEL_STUDIO_DB_NAME=${LABEL_STUDIO_DB_NAME:-postgres}
+      - LABEL_STUDIO_DB_USER=${LABEL_STUDIO_DB_USER:-postgres}
+      - LABEL_STUDIO_DB_PASSWORD=${LABEL_STUDIO_DB_PASSWORD:-postgres}
 
       # YOLO parameters
 
@@ -43,6 +53,16 @@ services:
       - MODEL_SCORE_THRESHOLD=0.5
       # Model root directory, where the YOLO model files are stored
       - MODEL_ROOT=/app/models
+
+      # YOLO training parameters
+      - YOLO_TRAIN_PROJECT_ROOT=/data/server/yolo_autotrain
+      - YOLO_TRAIN_EPOCHS=${YOLO_TRAIN_EPOCHS:-25}
+      - YOLO_TRAIN_IMGSZ=${YOLO_TRAIN_IMGSZ:-1024}
+      - YOLO_TRAIN_BATCH=${YOLO_TRAIN_BATCH:-8}
+      - YOLO_TRAIN_WORKERS=${YOLO_TRAIN_WORKERS:-2}
+      - YOLO_TRAIN_PATIENCE=${YOLO_TRAIN_PATIENCE:-20}
+      - YOLO_TRAIN_BASE_MODEL_DETECT=${YOLO_TRAIN_BASE_MODEL_DETECT:-yolov8m.pt}
+      - YOLO_TRAIN_BASE_MODEL_SEGMENT=${YOLO_TRAIN_BASE_MODEL_SEGMENT:-yolov8n-seg.pt}
     extra_hosts:
       - "host.docker.internal:host-gateway"  # for macos and unix      
     ports:

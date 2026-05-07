@@ -114,9 +114,40 @@ class YoloAutoTrainer:
             normalized.append(task_copy)
         return normalized
 
+    def _resolve_credentials(self) -> Tuple[str, str]:
+        """Resolve Label Studio host and API token via middleware or env vars."""
+        host = ""
+        token = ""
+
+        # Try the organization middleware first (auto-resolves tokens from Label Studio DB)
+        if os.getenv("USE_ORG_MIDDLEWARE", "").lower() in ("true", "1", "yes"):
+            try:
+                from org_api_middleware_v3 import get_middleware
+
+                middleware = get_middleware()
+                project_id_int = int(self.project_id)
+                host, token, token_type = middleware.get_credentials_for_project(project_id_int)
+                if host and token:
+                    logger.info(
+                        "Middleware resolved credentials for project %s (token_type=%s)",
+                        self.project_id, token_type,
+                    )
+            except Exception as exc:
+                logger.debug(
+                    "Middleware credential resolution failed for project %s: %s",
+                    self.project_id, exc,
+                )
+
+        # Fall back to backend storage / env vars
+        if not host:
+            host = (self.backend.get("ls_host") or os.getenv("LABEL_STUDIO_HOST") or "").strip()
+        if not token:
+            token = (self.backend.get("ls_access_token") or os.getenv("LABEL_STUDIO_API_KEY") or "").strip()
+
+        return host, token
+
     def _fetch_annotated_tasks_from_label_studio(self) -> List[Dict]:
-        host = (self.backend.get("ls_host") or os.getenv("LABEL_STUDIO_HOST") or "").strip()
-        token = (self.backend.get("ls_access_token") or os.getenv("LABEL_STUDIO_API_KEY") or "").strip()
+        host, token = self._resolve_credentials()
 
         if not host or not token:
             logger.warning(
@@ -279,6 +310,24 @@ class YoloAutoTrainer:
 
             shutil.copy2(src_image, target_image)
             target_label.write_text("\n".join(label_lines) + "\n", encoding="utf-8")
+
+        # When num_samples is very small (e.g. 1), the split logic above may leave the
+        # validation directory empty. YOLO requires a validation set, so copy the train
+        # images/labels into val to satisfy the requirement.
+        val_images = list(images_val.iterdir())
+        if not val_images:
+            logger.warning(
+                "Validation set is empty (%d sample(s) total). Copying train data to val.",
+                num_samples,
+            )
+            for train_image in images_train.iterdir():
+                if train_image.is_file():
+                    val_image = images_val / train_image.name
+                    shutil.copy2(train_image, val_image)
+            for train_label in labels_train.iterdir():
+                if train_label.is_file():
+                    val_label = labels_val / train_label.name
+                    shutil.copy2(train_label, val_label)
 
         data_yaml = dataset_dir / "data.yaml"
         yaml.safe_dump(
