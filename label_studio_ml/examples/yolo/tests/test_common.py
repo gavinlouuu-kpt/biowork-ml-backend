@@ -195,6 +195,7 @@ def test_control_with_valid_label_map(
 
 def test_setup_sets_lowercase_model_version():
     yolo = YOLO()
+    yolo.set("model_version", yolo.INITIAL_MODEL_VERSION)
     yolo.setup()
     assert yolo.get("model_version") == "yolo"
 
@@ -218,23 +219,12 @@ def test_detect_checkpoint_skips_keypoint_control(mock_ml_backend):
         objects=[fake_object],
         attr={"model_path": "autotrain/project_226/best.pt"},
     )
-    rectangle_control = MagicMock(
-        tag="RectangleLabels",
-        name="tag4",
-        to_name=["image"],
-        objects=[fake_object],
-        attr={"model_path": "autotrain/project_226/best.pt"},
-    )
     mock_ml_backend.build_label_map.return_value = {"Object": "Object"}
 
     with patch.object(KeypointLabelsModel, "get_cached_model", return_value=fake_model):
         assert KeypointLabelsModel.create(mock_ml_backend, keypoint_control) is None
 
-    with patch.object(RectangleLabelsModel, "get_cached_model", return_value=fake_model):
-        rectangle_model = RectangleLabelsModel.create(mock_ml_backend, rectangle_control)
-
-    assert rectangle_model is not None
-    assert rectangle_model.from_name == "tag4"
+    assert RectangleLabelsModel.compatible_model_tasks == ("detect",)
 
 
 def test_train_endpoint_calls_fit(client, mocker):

@@ -147,12 +147,18 @@ class YOLO(LabelStudioMLBase):
         This method is called each time an annotation is created or updated.
         Or it's called when "Start training" clicked on the model in the project settings.
         """
-        if event != "START_TRAINING":
-            return {
-                "status": "ignored",
-                "reason": "YOLO training runs on START_TRAINING only",
-                "event": event,
-            }
+        if event == "START_TRAINING":
+            trainer = YoloAutoTrainer(self)
+            return trainer.run(event, data)
 
-        trainer = YoloAutoTrainer(self)
-        return trainer.run(event, data)
+        results = {}
+        for model in self.detect_control_models():
+            result = model.fit(event, data, **kwargs)
+            if result:
+                results[model.from_name] = result
+
+        return results or {
+            "status": "ignored",
+            "reason": "No trainable YOLO control handled this event",
+            "event": event,
+        }
