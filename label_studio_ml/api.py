@@ -1,6 +1,8 @@
 import hmac
 import logging
 import os
+import uuid
+import threading
 
 from flask import Flask, request, jsonify, Response
 
@@ -13,6 +15,10 @@ logger = logging.getLogger(__name__)
 _server = Flask(__name__)
 MODEL_CLASS = LabelStudioMLBase
 BASIC_AUTH = None
+
+# In-memory store for async prediction jobs
+_prediction_jobs = {}
+_prediction_jobs_lock = threading.Lock()
 
 
 def init_app(model_class, basic_auth_user=None, basic_auth_pass=None):
@@ -31,11 +37,53 @@ def init_app(model_class, basic_auth_user=None, basic_auth_pass=None):
     return _server
 
 
+def _run_async_predict(job_id, data):
+    """Background worker: runs prediction and writes result into _prediction_jobs."""
+    tasks = data.get('tasks')
+    label_config = data.get('label_config')
+    project = str(data.get('project'))
+    project_id = project.split('.', 1)[0] if project else None
+    params = data.get('params', {})
+    context = params.pop('context', {})
+
+    with _prediction_jobs_lock:
+        _prediction_jobs[job_id]['status'] = 'started'
+
+    try:
+        model = MODEL_CLASS(project_id=project_id, label_config=label_config)
+        response = model.predict(tasks, context=context, **params)
+
+        if isinstance(response, ModelResponse):
+            if not response.has_model_version():
+                mv = model.model_version
+                if mv:
+                    response.set_version(str(mv))
+            else:
+                response.update_predictions_version()
+            response = response.model_dump()
+
+        results = response
+        if results is None:
+            results = []
+        if isinstance(results, dict):
+            results = results.get('predictions', results)
+
+        with _prediction_jobs_lock:
+            _prediction_jobs[job_id]['status'] = 'done'
+            _prediction_jobs[job_id]['results'] = results
+
+    except Exception as e:
+        logger.error(f'Async prediction job {job_id} failed: {e}', exc_info=True)
+        with _prediction_jobs_lock:
+            _prediction_jobs[job_id]['status'] = 'error'
+            _prediction_jobs[job_id]['error'] = str(e)
+
+
 @_server.route('/predict', methods=['POST'])
 @exception_handler
 def _predict():
     """
-    Predict tasks
+    Predict tasks (synchronous).
 
     Example request:
     request = {
@@ -87,6 +135,64 @@ def _predict():
         res = response.get("predictions", response)
 
     return jsonify({'results': res})
+
+
+@_server.route('/predict_async', methods=['POST'])
+@exception_handler
+def _predict_async():
+    """
+    Submit a batch prediction job asynchronously.
+
+    Accepts the same payload as /predict but returns immediately with a
+    job_id. Poll GET /predictions/<job_id> to check status and retrieve
+    results when done.
+
+    @return: {"job_id": "<uuid>", "status": "pending"}
+    """
+    data = request.json
+    job_id = str(uuid.uuid4())
+
+    with _prediction_jobs_lock:
+        _prediction_jobs[job_id] = {
+            'status': 'pending',
+            'results': None,
+            'error': None,
+        }
+
+    thread = threading.Thread(
+        target=_run_async_predict,
+        args=(job_id, data),
+        daemon=True,
+    )
+    thread.start()
+
+    return jsonify({'job_id': job_id, 'status': 'pending'})
+
+
+@_server.route('/predictions/<job_id>', methods=['GET'])
+@exception_handler
+def _prediction_status(job_id):
+    """
+    Get the status and results of an async prediction job.
+
+    @return:
+    - {"job_id": "...", "status": "pending"|"started"} while processing
+    - {"job_id": "...", "status": "done", "results": [...]} on completion
+    - {"job_id": "...", "status": "error", "error": "..."} on failure
+    """
+    with _prediction_jobs_lock:
+        job = _prediction_jobs.get(job_id)
+
+    if job is None:
+        return jsonify({'error': f'Job {job_id} not found'}), 404
+
+    response = {'job_id': job_id, 'status': job['status']}
+    if job['status'] == 'done':
+        response['results'] = job['results']
+    elif job['status'] == 'error':
+        response['error'] = job['error']
+
+    return jsonify(response)
 
 
 @_server.route('/setup', methods=['POST'])
