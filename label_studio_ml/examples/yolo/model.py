@@ -14,6 +14,7 @@ from control_models.video_rectangle import VideoRectangleModel
 from control_models.timeline_labels import TimelineLabelsModel
 from training import YoloAutoTrainer
 from typing import List, Dict, Optional
+from org_api_middleware_v3 import get_credentials_for_task
 
 
 logger = logging.getLogger(__name__)
@@ -104,6 +105,30 @@ class YOLO(LabelStudioMLBase):
 
         return control_models
 
+    def _resolve_task_credentials(
+        self, task: Dict, **kwargs
+    ) -> tuple[Optional[str], Optional[str]]:
+        """Resolve Label Studio host/token for media download.
+
+        Priority:
+        1) Per-request values from Label Studio inference payload
+        2) Organization middleware project-scoped credentials
+        3) Environment fallback
+        """
+        request_host = kwargs.get("hostname") or kwargs.get("ls_host")
+        request_token = kwargs.get("access_token") or kwargs.get("ls_access_token")
+
+        middleware_host = None
+        middleware_token = None
+        try:
+            middleware_host, middleware_token, _ = get_credentials_for_task(task)
+        except Exception as e:
+            logger.debug("Credential middleware lookup failed for task=%s: %s", task.get("id"), e)
+
+        host = request_host or middleware_host or os.getenv("LABEL_STUDIO_HOST")
+        token = request_token or middleware_token or os.getenv("LABEL_STUDIO_API_KEY")
+        return host, token
+
     def predict(
         self, tasks: List[Dict], context: Optional[Dict] = None, **kwargs
     ) -> ModelResponse:
@@ -122,10 +147,15 @@ class YOLO(LabelStudioMLBase):
 
         predictions = []
         for task in tasks:
+            ls_host, ls_access_token = self._resolve_task_credentials(task, **kwargs)
 
             regions = []
             for model in control_models:
-                path = model.get_path(task)
+                path = model.get_path(
+                    task,
+                    ls_host=ls_host,
+                    ls_access_token=ls_access_token,
+                )
                 regions += model.predict_regions(path)
 
             # calculate final score

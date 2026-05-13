@@ -33,6 +33,10 @@ services:
       # so LABEL_STUDIO_API_KEY is not needed when USE_ORG_MIDDLEWARE=true.
       - LABEL_STUDIO_HOST=${LABEL_STUDIO_HOST:-http://label-studio-app-dev:8000}
       - LABEL_STUDIO_API_KEY=${LABEL_STUDIO_API_KEY:-}
+      - HTTP_PROXY=http://tailscale-proxy:1055
+      - HTTPS_PROXY=http://tailscale-proxy:1055
+      - ALL_PROXY=socks5://tailscale-proxy:1055
+      - NO_PROXY=localhost,127.0.0.1,db-dev,label-studio-app-dev,label-studio-nginx-dev
 
       # Middleware database connection (PostgreSQL)
       - LABEL_STUDIO_DB_TYPE=${LABEL_STUDIO_DB_TYPE:-postgres}

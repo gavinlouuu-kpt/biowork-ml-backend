@@ -452,10 +452,10 @@ class NewModel(LabelStudioMLBase):
         except Exception:
             pass
 
-        image_path = get_local_path(
+        image_path = self.get_local_path(
             image_url,
-            access_token=access_token,
-            hostname=hostname,
+            ls_access_token=access_token,
+            ls_host=hostname,
             task_id=task.get('id') if task else None
         )
         # Simple embedding reuse: avoid resetting predictor if same image URL
@@ -525,10 +525,10 @@ class NewModel(LabelStudioMLBase):
             except Exception:
                 pass
 
-            local_img_path = get_local_path(
+            local_img_path = self.get_local_path(
                 img_url,
-                access_token=access_token,
-                hostname=hostname,
+                ls_access_token=access_token,
+                ls_host=hostname,
                 task_id=tasks[0].get('id')
             )
             image = cv2.imread(local_img_path)
@@ -650,10 +650,15 @@ class NewModel(LabelStudioMLBase):
         try:
             from org_api_middleware_v3 import get_credentials_for_task as _get_creds
             hostname, access_token, _ = _get_creds(tasks[0])
-            local_img_path = get_local_path(tasks[0]['data'][value], access_token=access_token, hostname=hostname, task_id=tasks[0].get('id'))
+            local_img_path = self.get_local_path(
+                tasks[0]['data'][value],
+                ls_access_token=access_token,
+                ls_host=hostname,
+                task_id=tasks[0].get('id'),
+            )
         except Exception:
             try:
-                local_img_path = get_local_path(tasks[0]['data'][value], task_id=tasks[0].get('id'))
+                local_img_path = self.get_local_path(tasks[0]['data'][value], task_id=tasks[0].get('id'))
             except Exception:
                 local_img_path = None
 

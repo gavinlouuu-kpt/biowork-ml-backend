@@ -23,6 +23,10 @@ services:
     environment:
       - USE_ORG_MIDDLEWARE=true
       - LOG_LEVEL=DEBUG
+      - HTTP_PROXY=http://tailscale-proxy:1055
+      - HTTPS_PROXY=http://tailscale-proxy:1055
+      - ALL_PROXY=socks5://tailscale-proxy:1055
+      - NO_PROXY=localhost,127.0.0.1,db-dev,label-studio-app-dev,label-studio-nginx-dev
     ports:
       - "9096:9090"
     volumes:

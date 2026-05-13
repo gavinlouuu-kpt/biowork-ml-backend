@@ -7,7 +7,6 @@ from ultralytics import YOLO
 
 from label_studio_ml.model import LabelStudioMLBase
 from label_studio_ml.utils import DATA_UNDEFINED_NAME
-from label_studio_sdk._extensions.label_studio_tools.core.utils.io import get_local_path
 from label_studio_sdk.label_interface.control_tags import ControlTag
 from label_studio_sdk.label_interface import LabelInterface
 
@@ -183,7 +182,12 @@ class ControlModel(BaseModel):
         logger.warning("The fit method is not implemented for this control model")
         return False
 
-    def get_path(self, task):
+    def get_path(
+        self,
+        task,
+        ls_host: Optional[str] = None,
+        ls_access_token: Optional[str] = None,
+    ):
         task_path = task["data"].get(self.value) or task["data"].get(
             DATA_UNDEFINED_NAME
         )
@@ -198,7 +202,12 @@ class ControlModel(BaseModel):
         path = (
             task_path
             if os.path.exists(task_path)
-            else get_local_path(task_path, task_id=task.get("id"))
+            else self.label_studio_ml_backend.get_local_path(
+                task_path,
+                task_id=task.get("id"),
+                ls_host=ls_host,
+                ls_access_token=ls_access_token,
+            )
         )
         logger.debug(f"load_image: {task_path} => {path}")
         return path

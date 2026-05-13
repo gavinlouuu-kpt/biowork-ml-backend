@@ -13,6 +13,18 @@ logger = logging.getLogger(__name__)
 _server = Flask(__name__)
 MODEL_CLASS = LabelStudioMLBase
 BASIC_AUTH = None
+SENSITIVE_LOG_KEYS = {"access_token", "password", "basic_auth_pass"}
+
+
+def _redact_sensitive(value):
+    if isinstance(value, dict):
+        return {
+            key: "***REDACTED***" if key.lower() in SENSITIVE_LOG_KEYS else _redact_sensitive(item)
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [_redact_sensitive(item) for item in value]
+    return value
 
 
 def init_app(model_class, basic_auth_user=None, basic_auth_pass=None):
@@ -60,9 +72,15 @@ def _predict():
     project_id = project.split('.', 1)[0] if project else None
     params = data.get('params', {})
     context = params.pop('context', {})
+    hostname = data.get('hostname') or params.pop('hostname', None)
+    access_token = data.get('access_token') or params.pop('access_token', None)
 
     model = MODEL_CLASS(project_id=project_id,
                         label_config=label_config)
+    if hostname:
+        model.set("ls_host", hostname)
+    if access_token:
+        model.set("ls_access_token", access_token)
 
     # model.use_label_config(label_config)
 
@@ -208,7 +226,10 @@ def check_auth():
 @_server.before_request
 def log_request_info():
     logger.debug('Request headers: %s', request.headers)
-    logger.debug('Request body: %s', request.get_data())
+    if request.is_json:
+        logger.debug('Request body: %s', _redact_sensitive(request.get_json(silent=True)))
+    else:
+        logger.debug('Request body: %s', request.get_data())
 
 
 @_server.after_request

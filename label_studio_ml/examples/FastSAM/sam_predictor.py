@@ -11,7 +11,7 @@ logger = logging.getLogger(__name__)
 _MODELS_DIR = pathlib.Path(__file__).parent / "models"
 
 FASTSAM_CHECKPOINT = os.environ.get("FASTSAM_CHECKPOINT", _MODELS_DIR / "FastSAM-x.pt")
-LABEL_STUDIO_ACCESS_TOKEN = os.environ.get("LABEL_STUDIO_ACCESS_TOKEN")
+LABEL_STUDIO_ACCESS_TOKEN = os.environ.get("LABEL_STUDIO_ACCESS_TOKEN") or os.environ.get("LABEL_STUDIO_API_KEY")
 LABEL_STUDIO_HOST = os.environ.get("LABEL_STUDIO_HOST")
 
 # Organization middleware support (V3)
@@ -87,7 +87,7 @@ class SAMPredictor:
 
         # Resolve image path with credentials
         hostname, access_token = get_credentials_for_task(task)
-        image_path = get_local_path(
+        image_path = img_path if os.path.exists(img_path) else get_local_path(
             img_path,
             access_token=access_token,
             hostname=hostname,
@@ -153,5 +153,4 @@ class SAMPredictor:
         
         logger.debug(f"FastSAM prediction completed in {time.time() - predict_start_time:.4f}s")
         return {"masks": masks, "probs": probs}
-
 

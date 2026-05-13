@@ -263,6 +263,20 @@ class LabelStudioMLBase(ABC):
         Returns:
           The local path for the given URL.
         """
+        ls_host = (
+            ls_host
+            or kwargs.pop("hostname", None)
+            or self.get("ls_host")
+            or os.getenv("LABEL_STUDIO_HOST")
+            or os.getenv("LABEL_STUDIO_URL")
+        )
+        ls_access_token = (
+            ls_access_token
+            or kwargs.pop("access_token", None)
+            or self.get("ls_access_token")
+            or os.getenv("LABEL_STUDIO_API_KEY")
+            or os.getenv("LABEL_STUDIO_ACCESS_TOKEN")
+        )
         return get_local_path(
             url,
             project_dir=project_dir,

@@ -65,3 +65,53 @@ def test_preload_task_data_complex_structure(mock_get_local_path, mock_file, mod
     mock_get_local_path.assert_called_with(url=url, task_id=task["id"])
     mock_file.assert_called_with("path", "r")
     print(result)
+
+
+@patch("label_studio_ml.model.get_local_path", return_value="path")
+def test_get_local_path_uses_setup_credentials(mock_get_local_path, model):
+    model.set("ls_host", "http://label-studio-app:8000")
+    model.set("ls_access_token", "setup-token")
+
+    assert model.get_local_path("s3://bucket/test/1.jpg", task_id=123) == "path"
+
+    _, kwargs = mock_get_local_path.call_args
+    assert kwargs["hostname"] == "http://label-studio-app:8000"
+    assert kwargs["access_token"] == "setup-token"
+    assert kwargs["task_id"] == 123
+
+
+@patch.dict(
+    "os.environ",
+    {
+        "LABEL_STUDIO_HOST": "http://label-studio-app-dev:8000",
+        "LABEL_STUDIO_API_KEY": "env-token",
+    },
+)
+@patch("label_studio_ml.model.get_local_path", return_value="path")
+def test_get_local_path_uses_env_credentials(mock_get_local_path):
+    model = LabelStudioMLBase(
+        project_id="env-fallback-test",
+        label_config="""<View><Text name="Text" value="$text"/></View>""",
+    )
+
+    assert model.get_local_path("s3://bucket/test/1.jpg", task_id=456) == "path"
+
+    _, kwargs = mock_get_local_path.call_args
+    assert kwargs["hostname"] == "http://label-studio-app-dev:8000"
+    assert kwargs["access_token"] == "env-token"
+    assert kwargs["task_id"] == 456
+
+
+@patch("label_studio_ml.model.get_local_path", return_value="path")
+def test_get_local_path_accepts_sdk_credential_aliases(mock_get_local_path, model):
+    assert model.get_local_path(
+        "s3://bucket/test/1.jpg",
+        hostname="http://label-studio-app:8000",
+        access_token="sdk-token",
+        task_id=789,
+    ) == "path"
+
+    _, kwargs = mock_get_local_path.call_args
+    assert kwargs["hostname"] == "http://label-studio-app:8000"
+    assert kwargs["access_token"] == "sdk-token"
+    assert kwargs["task_id"] == 789
