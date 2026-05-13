@@ -4,4 +4,5 @@ torchmetrics<1.8.0
 numpy<2
 lap==0.5.12
 psycopg2-binary
-
+mlflow>=2.12,<3
+boto3>=1.28,<2
