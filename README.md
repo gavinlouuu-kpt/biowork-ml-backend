@@ -3,6 +3,13 @@
 The Label Studio ML backend is an SDK that lets you wrap your machine learning code and turn it into a web server.
 The web server can be connected to a running [Label Studio](https://labelstud.io/) instance to automate labeling tasks.
 
+## Biowork project workflow
+
+This fork is the ML service layer for the Biowork product system with
+`biowork` and `rustfs_yolo_sam2_inference`. See `AGENTS.md` and
+`docs/biowork_product_workflow.md` for the cross-repo workflow, GitHub Project,
+RustFS, MLflow, active-training, and verification habits.
+
 If you just need to load static pre-annotated data into Label Studio, running an ML backend might be overkill for you.
 Instead, you can [import pre-annotated data](https://labelstud.io/guide/predictions.html).
 
@@ -306,4 +313,3 @@ You must ensure that the ML backend can access your Label Studio data. If it can
 * Your ML backend appears to be connected properly, but cannot seem to complete any auto annotations within tasks. 
 
 To remedy this, ensure you have set the `LABEL_STUDIO_URL` and `LABEL_STUDIO_API_KEY` environment variables. For more information, see [Allow the ML backend to access Label Studio data](https://labelstud.io/guide/ml#Allow-the-ML-backend-to-access-Label-Studio-data).
-
