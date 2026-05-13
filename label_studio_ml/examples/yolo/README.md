@@ -899,6 +899,30 @@ For more details on using the `TimelineLabels` ML backend, including training th
 and adjusting neural network classifier parameters, please refer to 
 **[README_TIMELINE_LABELS.md](README_TIMELINE_LABELS.md)**.
 
+### Active training registry
+
+Biowork YOLO active training records each generated model run in MLflow. By
+default, YOLO sends tracking metadata to the internal MLflow server at
+`http://mlflow:5000`, while run artifacts are stored in RustFS through the
+MLflow artifact proxy path `mlflow-artifacts:/biowork`. The MLflow server owns
+the RustFS credentials and persists the artifacts to its configured RustFS
+bucket.
+
+Configure the integration with:
+
+- `YOLO_TRAIN_MLFLOW_ENABLED`
+- `YOLO_TRAIN_MLFLOW_EXPERIMENT`
+- `MLFLOW_TRACKING_URI`
+- `MLFLOW_ARTIFACT_ROOT`
+- `MLFLOW_S3_ENDPOINT_URL`
+- `AWS_ACCESS_KEY_ID`
+- `AWS_SECRET_ACCESS_KEY`
+- `AWS_DEFAULT_REGION`
+
+Each successful active-training run logs the project ID, dataset counts, train
+parameters, final Ultralytics metrics from `results.csv`, dataset config,
+Ultralytics run artifacts, and the trained checkpoint.
+
 ### Default model
 
 `yolov8n-cls.pt` is the default classification model for simple mode.

@@ -1,3 +1,4 @@
+import csv
 import json
 import logging
 import os
@@ -6,7 +7,7 @@ import shutil
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import urlsplit, urlunsplit
 from xml.etree import ElementTree as ET
 
@@ -40,13 +41,170 @@ class ControlSpec:
     data_key: str
 
 
+class MlflowTrainingTracker:
+    def __init__(self, trainer: "YoloAutoTrainer", dataset: Dict, run_name: str, source_model: str):
+        self.trainer = trainer
+        self.dataset = dataset
+        self.run_name = run_name
+        self.source_model = source_model
+        self.mlflow = None
+        self.run = None
+        self.run_id: Optional[str] = None
+        self.tracking_uri: Optional[str] = None
+        self.experiment_name: Optional[str] = None
+        self.artifact_root: Optional[str] = None
+
+    def __enter__(self) -> "MlflowTrainingTracker":
+        if not self.trainer.mlflow_enabled:
+            return self
+
+        try:
+            import mlflow
+        except ImportError:
+            logger.warning("MLflow tracking is enabled but the mlflow package is not installed")
+            return self
+
+        self.mlflow = mlflow
+        self.tracking_uri = self.trainer.mlflow_tracking_uri
+        self.experiment_name = self.trainer.mlflow_experiment_name
+        self.artifact_root = self.trainer.mlflow_artifact_root
+
+        try:
+            mlflow.set_tracking_uri(self.tracking_uri)
+            experiment_id = self._resolve_experiment_id()
+            self.run = mlflow.start_run(experiment_id=experiment_id, run_name=self.run_name)
+            self.run_id = self.run.info.run_id
+            self._set_tags({"status": "running"})
+            self._log_params()
+            self._log_dataset_metadata()
+        except Exception as exc:
+            logger.warning("Failed to start MLflow tracking for YOLO training: %s", exc)
+            self.mlflow = None
+            self.run = None
+            self.run_id = None
+        return self
+
+    def __exit__(self, exc_type, exc, traceback) -> None:
+        if not self.mlflow or not self.run:
+            return
+
+        try:
+            if exc:
+                self._set_tags({"status": "failed", "error": str(exc)[:500]})
+                self.mlflow.end_run(status="FAILED")
+            else:
+                self.mlflow.end_run(status="FINISHED")
+        except Exception as mlflow_exc:
+            logger.warning("Failed to close MLflow run %s: %s", self.run_id, mlflow_exc)
+
+    def log_training_outputs(
+        self,
+        save_dir: Path,
+        best_model_path: Path,
+        model_version: str,
+        active_model_path: str,
+    ) -> None:
+        if not self.mlflow or not self.run:
+            return
+
+        try:
+            self._set_tags(
+                {
+                    "status": "succeeded",
+                    "model_version": model_version,
+                    "active_model_path": active_model_path,
+                }
+            )
+            self.mlflow.log_param("model_version", model_version)
+            self.mlflow.log_param("active_model_path", active_model_path)
+            self._log_results_csv(save_dir / "results.csv")
+
+            data_yaml = self.dataset.get("data_yaml")
+            if data_yaml:
+                self.mlflow.log_artifact(str(data_yaml), artifact_path="dataset")
+            if save_dir.exists():
+                self.mlflow.log_artifacts(str(save_dir), artifact_path="ultralytics_run")
+            if best_model_path.exists():
+                self.mlflow.log_artifact(str(best_model_path), artifact_path="model")
+        except Exception as exc:
+            logger.warning("Failed to log YOLO training outputs to MLflow run %s: %s", self.run_id, exc)
+
+    def _log_params(self) -> None:
+        self.mlflow.log_params(
+            {
+                "project_id": self.trainer.project_id,
+                "task": self.dataset["task"],
+                "epochs": self.trainer.epochs,
+                "imgsz": self.trainer.imgsz,
+                "batch": self.trainer.batch,
+                "workers": self.trainer.workers,
+                "patience": self.trainer.patience,
+                "source_model": self.source_model,
+                "base_detect_model": self.trainer.base_detect_model,
+                "base_segment_model": self.trainer.base_segment_model,
+                "mlflow_artifact_root": self.artifact_root,
+            }
+        )
+
+    def _log_dataset_metadata(self) -> None:
+        self.mlflow.log_params(
+            {
+                "dataset_path": str(self.dataset["dataset_dir"]),
+                "num_samples": self.dataset["num_samples"],
+                "num_train": self.dataset["num_train"],
+                "num_val": self.dataset["num_val"],
+            }
+        )
+        self.mlflow.log_metric("dataset_num_samples", self.dataset["num_samples"])
+        self.mlflow.log_metric("dataset_num_train", self.dataset["num_train"])
+        self.mlflow.log_metric("dataset_num_val", self.dataset["num_val"])
+
+    def _log_results_csv(self, results_csv: Path) -> None:
+        if not results_csv.exists():
+            return
+
+        with results_csv.open("r", encoding="utf-8", newline="") as csv_file:
+            rows = list(csv.DictReader(csv_file))
+        if not rows:
+            return
+
+        for key, value in rows[-1].items():
+            metric_name = key.strip()
+            if not metric_name or value in (None, ""):
+                continue
+            try:
+                self.mlflow.log_metric(metric_name, float(value))
+            except (TypeError, ValueError):
+                continue
+
+    def _set_tags(self, tags: Dict[str, Any]) -> None:
+        self.mlflow.set_tags(
+            {
+                "biowork.project_id": self.trainer.project_id,
+                "biowork.model_backend": "YOLO",
+                "biowork.training_task": self.dataset["task"],
+                "biowork.artifact_store": self.artifact_root or "",
+                **tags,
+            }
+        )
+
+    def _resolve_experiment_id(self) -> str:
+        client = self.mlflow.tracking.MlflowClient()
+        experiment = client.get_experiment_by_name(self.experiment_name)
+        if experiment:
+            return experiment.experiment_id
+        return client.create_experiment(
+            self.experiment_name,
+            artifact_location=self.artifact_root,
+        )
+
+
 class YoloAutoTrainer:
     def __init__(self, backend):
         self.backend = backend
         self.project_id = str(backend.project_id)
-        self.project_root = Path(
-            os.getenv("YOLO_TRAIN_PROJECT_ROOT", "/data/server/yolo_autotrain")
-        ) / f"project_{self.project_id}"
+        self.train_root = Path(os.getenv("YOLO_TRAIN_PROJECT_ROOT", "/data/server/yolo_autotrain"))
+        self.project_root = self.train_root / f"project_{self.project_id}"
         self.project_root.mkdir(parents=True, exist_ok=True)
 
         self.epochs = int(os.getenv("YOLO_TRAIN_EPOCHS", "25"))
@@ -57,6 +215,23 @@ class YoloAutoTrainer:
 
         self.base_detect_model = os.getenv("YOLO_TRAIN_BASE_MODEL_DETECT", "yolov8m.pt")
         self.base_segment_model = os.getenv("YOLO_TRAIN_BASE_MODEL_SEGMENT", "yolov8n-seg.pt")
+        self.mlflow_enabled = os.getenv("YOLO_TRAIN_MLFLOW_ENABLED", "true").lower() in (
+            "1",
+            "true",
+            "yes",
+        )
+        self.mlflow_tracking_uri = os.getenv(
+            "MLFLOW_TRACKING_URI",
+            f"file://{self.train_root / 'mlflow'}",
+        )
+        self.mlflow_artifact_root = os.getenv(
+            "MLFLOW_ARTIFACT_ROOT",
+            "mlflow-artifacts:/biowork",
+        )
+        self.mlflow_experiment_name = os.getenv(
+            "YOLO_TRAIN_MLFLOW_EXPERIMENT",
+            "biowork-yolo-training",
+        )
 
     def run(self, event: str, data: Optional[Dict]) -> Dict:
         tasks = self._extract_annotated_tasks(data or {})
@@ -98,6 +273,10 @@ class YoloAutoTrainer:
             "project_id": self.project_id,
             "model_version": train_result["model_version"],
             "active_model_path": train_result["active_model_path"],
+            "mlflow_run_id": train_result.get("mlflow_run_id"),
+            "mlflow_tracking_uri": train_result.get("mlflow_tracking_uri"),
+            "mlflow_artifact_root": train_result.get("mlflow_artifact_root"),
+            "mlflow_experiment": train_result.get("mlflow_experiment"),
             "task": dataset["task"],
             "num_samples": dataset["num_samples"],
             "num_train": dataset["num_train"],
@@ -591,41 +770,57 @@ class YoloAutoTrainer:
 
         model = YOLO(source_model)
         train_name = f"run_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}"
-        model.train(
-            data=str(dataset["data_yaml"]),
-            epochs=self.epochs,
-            imgsz=self.imgsz,
-            batch=self.batch,
-            workers=self.workers,
-            patience=self.patience,
-            project=str(self.project_root / "runs"),
-            name=train_name,
-            exist_ok=False,
-        )
+        with MlflowTrainingTracker(self, dataset, train_name, source_model) as mlflow_run:
+            model.train(
+                data=str(dataset["data_yaml"]),
+                epochs=self.epochs,
+                imgsz=self.imgsz,
+                batch=self.batch,
+                workers=self.workers,
+                patience=self.patience,
+                project=str(self.project_root / "runs"),
+                name=train_name,
+                exist_ok=False,
+            )
 
-        trainer = getattr(model, "trainer", None)
-        best_model_path = None
-        if trainer is not None:
-            best_model_path = getattr(trainer, "best", None)
-        if not best_model_path:
-            fallback = self.project_root / "runs" / train_name / "weights" / "best.pt"
-            best_model_path = str(fallback)
+            trainer = getattr(model, "trainer", None)
+            best_model_path = None
+            save_dir = self.project_root / "runs" / train_name
+            if trainer is not None:
+                best_model_path = getattr(trainer, "best", None)
+                trainer_save_dir = getattr(trainer, "save_dir", None)
+                if trainer_save_dir:
+                    save_dir = Path(trainer_save_dir)
+            if not best_model_path:
+                fallback = save_dir / "weights" / "best.pt"
+                best_model_path = str(fallback)
 
-        best_path = Path(best_model_path)
-        if not best_path.exists():
-            raise FileNotFoundError(f"Trained checkpoint not found: {best_path}")
+            best_path = Path(best_model_path)
+            if not best_path.exists():
+                raise FileNotFoundError(f"Trained checkpoint not found: {best_path}")
 
-        timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
-        relative_target = Path("autotrain") / f"project_{self.project_id}" / "best.pt"
-        absolute_target = Path(MODEL_ROOT) / relative_target
-        absolute_target.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(best_path, absolute_target)
+            timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+            relative_target = Path("autotrain") / f"project_{self.project_id}" / "best.pt"
+            absolute_target = Path(MODEL_ROOT) / relative_target
+            absolute_target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(best_path, absolute_target)
 
-        model_version = f"yolo-auto-{task}-{timestamp}"
+            model_version = f"yolo-auto-{task}-{timestamp}"
+            active_model_path = str(relative_target).replace("\\", "/")
+            mlflow_run.log_training_outputs(
+                save_dir=save_dir,
+                best_model_path=best_path,
+                model_version=model_version,
+                active_model_path=active_model_path,
+            )
         return {
             "best_model_path": str(absolute_target),
-            "active_model_path": str(relative_target).replace("\\", "/"),
+            "active_model_path": active_model_path,
             "model_version": model_version,
+            "mlflow_run_id": mlflow_run.run_id,
+            "mlflow_tracking_uri": mlflow_run.tracking_uri,
+            "mlflow_artifact_root": mlflow_run.artifact_root,
+            "mlflow_experiment": mlflow_run.experiment_name,
         }
 
     def _resolve_source_model(self, fallback_model: str) -> str:
