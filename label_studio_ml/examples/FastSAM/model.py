@@ -26,6 +26,25 @@ class SamMLBackend(LabelStudioMLBase):
     def setup(self):
         self.set("model_version", f"{self.__class__.__name__}-fastsam-v1")
 
+    def _control_label_names(self, control_name: Optional[str]) -> List[str]:
+        if not control_name:
+            return []
+        try:
+            control = self.label_interface.get_control(control_name)
+            if control and control.labels_attrs:
+                return list(control.labels_attrs.keys())
+        except Exception:
+            pass
+        return []
+
+    def _resolve_control_label(self, control_name: Optional[str], preferred_label: Optional[str] = None) -> str:
+        label_names = self._control_label_names(control_name)
+        if preferred_label and (not label_names or preferred_label in label_names):
+            return preferred_label
+        if label_names:
+            return label_names[0]
+        return preferred_label or 'Auto'
+
     def get_runtime_config(self, **kwargs):
         response_type = kwargs.get('response_type') or RESPONSE_TYPE
         polygon_detail_level = float(kwargs.get('polygon_detail_level') or POLYGON_DETAIL_LEVEL)
@@ -387,20 +406,8 @@ class SamMLBackend(LabelStudioMLBase):
         total_prob = 0
         result_count = 0
 
-        # Resolve valid labels from the controls to avoid "No label" in UI
-        try:
-            brush_control = self.label_interface.get_control(from_name)
-            brush_label_names = list(brush_control.labels_attrs.keys()) if brush_control and brush_control.labels_attrs else []
-            brush_label_value = brush_label_names[0] if brush_label_names else (label or 'Auto')
-        except Exception:
-            brush_label_value = label or 'Auto'
-
-        try:
-            polygon_control = self.label_interface.get_control(polygon_from_name) if polygon_from_name else None
-            polygon_label_names = list(polygon_control.labels_attrs.keys()) if polygon_control and polygon_control.labels_attrs else []
-            polygon_label_value = polygon_label_names[0] if polygon_label_names else (label or 'Auto')
-        except Exception:
-            polygon_label_value = label or 'Auto'
+        brush_label_value = self._resolve_control_label(from_name, label)
+        polygon_label_value = self._resolve_control_label(polygon_from_name, label)
             
         # DEBUG: Log before processing masks
         logger.debug(f"DEBUG: Starting mask processing, total masks available: {len(masks)}")
@@ -527,5 +534,4 @@ class SamMLBackend(LabelStudioMLBase):
             'model_version': self.get('model_version'),
             'score': total_prob / max(len(results), 1)
         }]
-
 

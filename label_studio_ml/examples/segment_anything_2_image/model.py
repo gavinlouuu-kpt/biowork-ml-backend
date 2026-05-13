@@ -129,6 +129,25 @@ class NewModel(LabelStudioMLBase):
             'score': 0.0,
         }])
 
+    def _control_label_names(self, control_name: Optional[str]) -> List[str]:
+        if not control_name:
+            return []
+        try:
+            control = self.label_interface.get_control(control_name)
+            if control and control.labels_attrs:
+                return list(control.labels_attrs.keys())
+        except Exception:
+            pass
+        return []
+
+    def _resolve_control_label(self, control_name: Optional[str], preferred_label: Optional[str] = None) -> str:
+        label_names = self._control_label_names(control_name)
+        if preferred_label and (not label_names or preferred_label in label_names):
+            return preferred_label
+        if label_names:
+            return label_names[0]
+        return preferred_label or 'Auto'
+
     def setup(self):
         """Read connection-level overrides from Label Studio extra_params.
 
@@ -285,6 +304,8 @@ class NewModel(LabelStudioMLBase):
         results = []
         total_prob = 0.0
         processed = 0
+        brush_label = self._resolve_control_label(from_name, label)
+        polygon_label = self._resolve_control_label(polygon_from_name, label)
 
         for mask, prob in zip(masks, probs):
             if processed >= max_results:
@@ -308,7 +329,7 @@ class NewModel(LabelStudioMLBase):
                     'value': {
                         'format': 'rle',
                         'rle': rle,
-                        'brushlabels': [label],
+                        'brushlabels': [brush_label],
                     },
                     'score': prob,
                     'type': 'brushlabels',
@@ -364,7 +385,7 @@ class NewModel(LabelStudioMLBase):
                         'image_rotation': 0,
                         'value': {
                             'points': points_pairs,
-                            'polygonlabels': [label],
+                            'polygonlabels': [polygon_label],
                         },
                         'score': prob,
                         'type': 'polygon',
@@ -544,13 +565,7 @@ class NewModel(LabelStudioMLBase):
                 return self._empty_prediction_response()
 
             height, width = image.shape[:2]
-            # Choose a label (first BrushLabel name)
-            try:
-                control = self.label_interface.get_control(from_name)
-                label_names = list(control.labels_attrs.keys()) if control and control.labels_attrs else []
-                selected_label = label_names[0] if label_names else 'Auto'
-            except Exception:
-                selected_label = 'Auto'
+            selected_label = self._resolve_control_label(from_name)
 
             predictions = self.get_results(
                 masks=masks,
