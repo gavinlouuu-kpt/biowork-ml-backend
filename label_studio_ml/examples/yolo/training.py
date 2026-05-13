@@ -14,6 +14,7 @@ import yaml
 from ultralytics import YOLO
 
 from control_models.base import MODEL_ROOT, _model_cache
+from utils.mask_geometry import brush_region_bbox
 
 logger = logging.getLogger(__name__)
 
@@ -57,7 +58,7 @@ class YoloAutoTrainer:
         if not controls:
             return {
                 "status": "skipped",
-                "reason": "Label config has no Image RectangleLabels/PolygonLabels controls",
+                "reason": "Label config has no Image RectangleLabels/PolygonLabels/BrushLabels controls",
                 "project_id": self.project_id,
             }
 
@@ -65,7 +66,7 @@ class YoloAutoTrainer:
         if dataset["num_samples"] == 0:
             return {
                 "status": "skipped",
-                "reason": "No supported regions found in annotations (RectangleLabels/PolygonLabels)",
+                "reason": "No supported regions found in annotations (RectangleLabels/PolygonLabels/BrushLabels)",
                 "project_id": self.project_id,
             }
 
@@ -209,7 +210,7 @@ class YoloAutoTrainer:
             object_keys[name] = value[1:]
 
         for el in root.iter():
-            if el.tag not in ("RectangleLabels", "PolygonLabels"):
+            if el.tag not in ("RectangleLabels", "PolygonLabels", "BrushLabels"):
                 continue
             control_name = (el.attrib.get("name") or "").strip()
             to_name = (el.attrib.get("toName") or "").strip()
@@ -389,10 +390,14 @@ class YoloAutoTrainer:
                 continue
             if spec.control_type == "PolygonLabels" and region_type != "polygonlabels":
                 continue
+            if spec.control_type == "BrushLabels" and region_type != "brushlabels":
+                continue
 
-            label_value_key = (
-                "rectanglelabels" if spec.control_type == "RectangleLabels" else "polygonlabels"
-            )
+            label_value_key = {
+                "RectangleLabels": "rectanglelabels",
+                "PolygonLabels": "polygonlabels",
+                "BrushLabels": "brushlabels",
+            }[spec.control_type]
             labels = value.get(label_value_key) or []
             if not labels:
                 continue
@@ -418,10 +423,14 @@ class YoloAutoTrainer:
                 line = self._rectangle_to_yolo_line(class_id, value)
                 if line:
                     lines.append(line)
-            else:
+            elif spec.control_type == "PolygonLabels":
                 line = self._polygon_to_yolo_line(class_id, value)
                 if line:
                     has_polygon = True
+                    lines.append(line)
+            else:
+                line = self._brush_to_yolo_line(class_id, region)
+                if line:
                     lines.append(line)
 
         return lines, image_path, has_polygon
@@ -465,6 +474,29 @@ class YoloAutoTrainer:
         if len(flat) < 6:
             return None
         return f"{class_id} " + " ".join(flat)
+
+    def _brush_to_yolo_line(self, class_id: int, region: Dict) -> Optional[str]:
+        try:
+            bbox = brush_region_bbox(region)
+        except Exception as exc:
+            logger.warning("Skipping BrushLabels region with invalid mask RLE: %s", exc)
+            return None
+        if not bbox:
+            return None
+
+        value = region.get("value") or {}
+        width = float(region.get("original_width") or value.get("original_width") or 0)
+        height = float(region.get("original_height") or value.get("original_height") or 0)
+        if width <= 0 or height <= 0:
+            return None
+
+        rectangle_value = {
+            "x": (float(bbox["x"]) / width) * 100.0,
+            "y": (float(bbox["y"]) / height) * 100.0,
+            "width": (float(bbox["width"]) / width) * 100.0,
+            "height": (float(bbox["height"]) / height) * 100.0,
+        }
+        return self._rectangle_to_yolo_line(class_id, rectangle_value)
 
     def _train(self, dataset: Dict) -> Dict:
         task = dataset["task"]

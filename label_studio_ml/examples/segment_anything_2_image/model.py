@@ -271,7 +271,6 @@ class NewModel(LabelStudioMLBase):
 
     def get_results(self, masks, probs, width, height, from_name, to_name, label,
                     polygon_from_name: Optional[str] = None,
-                    rectangle_from_name: Optional[str] = None,
                     response_type: Optional[str] = None,
                     polygon_detail_level: Optional[float] = None,
                     max_results: Optional[int] = None,
@@ -397,42 +396,6 @@ class NewModel(LabelStudioMLBase):
 
                     results.append(polygon_result)
 
-            # Emit a RectangleLabels result derived from the mask bbox so that
-            # YOLO active-learning training can consume it directly.
-            if rectangle_from_name and geometry_meta and geometry_meta.get("bbox"):
-                bbox = geometry_meta["bbox"]
-                bx = float(bbox.get("x", 0))
-                by = float(bbox.get("y", 0))
-                bw = float(bbox.get("width", 0))
-                bh = float(bbox.get("height", 0))
-                if bw > 0 and bh > 0:
-                    rect_id = str(uuid4())[:4]
-                    # Convert pixel bbox (top-left origin) to 0-100 percentage
-                    # as expected by Label Studio RectangleLabels and YOLO trainer.
-                    x_pct = (bx / width) * 100.0
-                    y_pct = (by / height) * 100.0
-                    w_pct = (bw / width) * 100.0
-                    h_pct = (bh / height) * 100.0
-                    rectangle_result = {
-                        'id': rect_id,
-                        'from_name': rectangle_from_name,
-                        'to_name': to_name,
-                        'original_width': width,
-                        'original_height': height,
-                        'image_rotation': 0,
-                        'value': {
-                            'x': x_pct,
-                            'y': y_pct,
-                            'width': w_pct,
-                            'height': h_pct,
-                            'rectanglelabels': [label],
-                        },
-                        'score': prob,
-                        'type': 'rectanglelabels',
-                        'readonly': False,
-                    }
-                    results.append(rectangle_result)
-
             processed += 1
 
         return [{
@@ -501,13 +464,6 @@ class NewModel(LabelStudioMLBase):
             polygon_from_name, _, _ = self.get_first_tag_occurence('PolygonLabels', 'Image')
         except Exception:
             polygon_from_name = None
-
-        # Try to resolve a rectangle control for YOLO active-learning training
-        rectangle_from_name = None
-        try:
-            rectangle_from_name, _, _ = self.get_first_tag_occurence('RectangleLabels', 'Image')
-        except Exception:
-            rectangle_from_name = None
 
         # Preannotation path (no context yet)
         if not context or not context.get('result'):
@@ -605,7 +561,6 @@ class NewModel(LabelStudioMLBase):
                 to_name=to_name,
                 label=selected_label,
                 polygon_from_name=polygon_from_name,
-                rectangle_from_name=rectangle_from_name,
                 response_type=cfg['response_type'],
                 polygon_detail_level=cfg['polygon_detail_level'],
                 max_results=cfg['max_results'],
@@ -671,7 +626,6 @@ class NewModel(LabelStudioMLBase):
             to_name=to_name,
             label=selected_label,
             polygon_from_name=polygon_from_name,
-            rectangle_from_name=rectangle_from_name,
             response_type=RESPONSE_TYPE,
             polygon_detail_level=POLYGON_DETAIL_LEVEL,
             max_results=MAX_RESULTS,
