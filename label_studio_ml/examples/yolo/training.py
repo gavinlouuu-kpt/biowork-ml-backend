@@ -215,7 +215,7 @@ class MlflowTrainingTracker:
         for fallback_step, row in enumerate(rows_to_log, start=1):
             step = self._metric_step(row, fallback_step if latest_only else None)
             for key, value in row.items():
-                metric_name = key.strip()
+                metric_name = self._sanitize_metric_name(key)
                 if not metric_name or metric_name == "epoch" or value in (None, ""):
                     continue
                 try:
@@ -240,6 +240,10 @@ class MlflowTrainingTracker:
                 self.mlflow.log_metric(name, value, step=step)
         except TypeError:
             self.mlflow.log_metric(name, value)
+
+    @staticmethod
+    def _sanitize_metric_name(name: str) -> str:
+        return re.sub(r"[^A-Za-z0-9_\-\. /:]", "", name.strip())
 
     def _log_once_artifacts(self, root: Path, relative_paths: Dict[str, str]) -> None:
         for relative_path, artifact_path in relative_paths.items():

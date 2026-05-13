@@ -266,8 +266,8 @@ def test_train_records_mlflow_run_with_rustfs_artifact_root(monkeypatch, tmp_pat
     assert tracking["params"]["project_id"] == "231"
     assert tracking["params"]["mlflow_artifact_root"] == "mlflow-artifacts:/biowork"
     assert tracking["metrics"]["dataset_num_samples"] == 4
-    assert tracking["metrics"]["metrics/mAP50(B)"] == 0.75
-    assert ("metrics/mAP50(B)", 0.75, 2) in tracking["metric_steps"]
+    assert tracking["metrics"]["metrics/mAP50B"] == 0.75
+    assert ("metrics/mAP50B", 0.75, 2) in tracking["metric_steps"]
     assert tracking["tags"]["status"] == "succeeded"
     assert tracking["tags"]["last_logged_epoch"] == "2"
     assert tracking["tags"]["biowork.artifact_store"] == "mlflow-artifacts:/biowork"
