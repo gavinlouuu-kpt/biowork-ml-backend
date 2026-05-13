@@ -149,6 +149,7 @@ def test_train_records_mlflow_run_with_rustfs_artifact_root(monkeypatch, tmp_pat
         "started_run": None,
         "params": {},
         "metrics": {},
+        "metric_steps": [],
         "artifacts": [],
         "artifact_dirs": [],
         "tags": {},
@@ -174,7 +175,11 @@ def test_train_records_mlflow_run_with_rustfs_artifact_root(monkeypatch, tmp_pat
     )
     mlflow.log_params = lambda params: tracking["params"].update(params)
     mlflow.log_param = lambda key, value: tracking["params"].update({key: value})
-    mlflow.log_metric = lambda key, value: tracking["metrics"].update({key: value})
+    def log_metric(key, value, step=None):
+        tracking["metrics"].update({key: value})
+        tracking["metric_steps"].append((key, value, step))
+
+    mlflow.log_metric = log_metric
     mlflow.log_artifact = lambda path, artifact_path=None: tracking["artifacts"].append(
         (path, artifact_path)
     )
@@ -192,6 +197,10 @@ def test_train_records_mlflow_run_with_rustfs_artifact_root(monkeypatch, tmp_pat
         def __init__(self, source_model):
             self.source_model = source_model
             self.trainer = None
+            self.callbacks = {}
+
+        def add_callback(self, event, callback):
+            self.callbacks.setdefault(event, []).append(callback)
 
         def train(self, **kwargs):
             save_dir = tmp_path / "runs" / kwargs["name"]
@@ -199,11 +208,16 @@ def test_train_records_mlflow_run_with_rustfs_artifact_root(monkeypatch, tmp_pat
             weights_dir.mkdir(parents=True)
             best_path = weights_dir / "best.pt"
             best_path.write_bytes(b"model")
+            (save_dir / "args.yaml").write_text("epochs: 3\n", encoding="utf-8")
+            (save_dir / "labels.jpg").write_bytes(b"labels")
+            (save_dir / "train_batch0.jpg").write_bytes(b"train")
             (save_dir / "results.csv").write_text(
-                "epoch,metrics/mAP50(B),train/box_loss\n1,0.75,0.1\n",
+                "epoch,metrics/mAP50(B),train/box_loss\n1,0.50,0.2\n2,0.75,0.1\n",
                 encoding="utf-8",
             )
-            self.trainer = SimpleNamespace(best=str(best_path), save_dir=str(save_dir))
+            self.trainer = SimpleNamespace(best=str(best_path), save_dir=str(save_dir), epoch=1)
+            for callback in self.callbacks.get("on_fit_epoch_end", []):
+                callback(self.trainer)
 
     monkeypatch.setattr(training, "YOLO", FakeYOLO)
 
@@ -253,8 +267,14 @@ def test_train_records_mlflow_run_with_rustfs_artifact_root(monkeypatch, tmp_pat
     assert tracking["params"]["mlflow_artifact_root"] == "mlflow-artifacts:/biowork"
     assert tracking["metrics"]["dataset_num_samples"] == 4
     assert tracking["metrics"]["metrics/mAP50(B)"] == 0.75
+    assert ("metrics/mAP50(B)", 0.75, 2) in tracking["metric_steps"]
     assert tracking["tags"]["status"] == "succeeded"
+    assert tracking["tags"]["last_logged_epoch"] == "2"
     assert tracking["tags"]["biowork.artifact_store"] == "mlflow-artifacts:/biowork"
+    assert any(artifact_path == "progress/epoch_0002" for _, artifact_path in tracking["artifacts"])
+    assert any(artifact_path == "config" for _, artifact_path in tracking["artifacts"])
+    assert any(artifact_path == "dataset/plots" for _, artifact_path in tracking["artifacts"])
+    assert any(artifact_path == "progress/samples" for _, artifact_path in tracking["artifacts"])
     assert any(artifact_path == "model" for _, artifact_path in tracking["artifacts"])
     assert any(artifact_path == "ultralytics_run" for _, artifact_path in tracking["artifact_dirs"])
     assert tracking["ended_status"] == "FINISHED"

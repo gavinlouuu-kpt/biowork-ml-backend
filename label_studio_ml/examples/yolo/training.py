@@ -53,6 +53,11 @@ class MlflowTrainingTracker:
         self.tracking_uri: Optional[str] = None
         self.experiment_name: Optional[str] = None
         self.artifact_root: Optional[str] = None
+        self.progress_artifact_interval = self._parse_positive_int(
+            os.getenv("YOLO_TRAIN_MLFLOW_PROGRESS_ARTIFACT_INTERVAL"),
+            default=1,
+        )
+        self._logged_once_artifacts = set()
 
     def __enter__(self) -> "MlflowTrainingTracker":
         if not self.trainer.mlflow_enabled:
@@ -129,6 +134,44 @@ class MlflowTrainingTracker:
         except Exception as exc:
             logger.warning("Failed to log YOLO training outputs to MLflow run %s: %s", self.run_id, exc)
 
+    def register_callbacks(self, model: YOLO) -> None:
+        if not self.mlflow or not self.run or not hasattr(model, "add_callback"):
+            return
+
+        model.add_callback("on_fit_epoch_end", self._log_epoch_progress)
+
+    def _log_epoch_progress(self, trainer) -> None:
+        save_dir = Path(getattr(trainer, "save_dir", "") or "")
+        if not save_dir:
+            return
+
+        epoch = int(getattr(trainer, "epoch", -1)) + 1
+        if epoch <= 0:
+            return
+
+        try:
+            self._set_tags({"status": "running", "last_logged_epoch": str(epoch)})
+            self._log_results_csv(save_dir / "results.csv", latest_only=True)
+
+            if epoch % self.progress_artifact_interval == 0:
+                epoch_path = f"progress/epoch_{epoch:04d}"
+                results_csv = save_dir / "results.csv"
+                if results_csv.exists():
+                    self.mlflow.log_artifact(str(results_csv), artifact_path=epoch_path)
+
+            self._log_once_artifacts(
+                save_dir,
+                {
+                    "args.yaml": "config",
+                    "labels.jpg": "dataset/plots",
+                    "labels_correlogram.jpg": "dataset/plots",
+                },
+            )
+            self._log_matching_artifacts_once(save_dir, "train_batch*.jpg", "progress/samples")
+            self._log_matching_artifacts_once(save_dir, "val_batch*.jpg", "progress/samples")
+        except Exception as exc:
+            logger.warning("Failed to log YOLO epoch progress to MLflow run %s: %s", self.run_id, exc)
+
     def _log_params(self) -> None:
         self.mlflow.log_params(
             {
@@ -159,7 +202,7 @@ class MlflowTrainingTracker:
         self.mlflow.log_metric("dataset_num_train", self.dataset["num_train"])
         self.mlflow.log_metric("dataset_num_val", self.dataset["num_val"])
 
-    def _log_results_csv(self, results_csv: Path) -> None:
+    def _log_results_csv(self, results_csv: Path, latest_only: bool = False) -> None:
         if not results_csv.exists():
             return
 
@@ -168,14 +211,53 @@ class MlflowTrainingTracker:
         if not rows:
             return
 
-        for key, value in rows[-1].items():
-            metric_name = key.strip()
-            if not metric_name or value in (None, ""):
-                continue
-            try:
-                self.mlflow.log_metric(metric_name, float(value))
-            except (TypeError, ValueError):
-                continue
+        rows_to_log = [rows[-1]] if latest_only else rows
+        for fallback_step, row in enumerate(rows_to_log, start=1):
+            step = self._metric_step(row, fallback_step if latest_only else None)
+            for key, value in row.items():
+                metric_name = key.strip()
+                if not metric_name or metric_name == "epoch" or value in (None, ""):
+                    continue
+                try:
+                    self._log_metric(metric_name, float(value), step=step)
+                except (TypeError, ValueError):
+                    continue
+
+    def _metric_step(self, row: Dict[str, Any], fallback: Optional[int] = None) -> Optional[int]:
+        raw_epoch = row.get("epoch")
+        if raw_epoch in (None, ""):
+            return fallback
+        try:
+            return int(float(raw_epoch))
+        except (TypeError, ValueError):
+            return fallback
+
+    def _log_metric(self, name: str, value: float, step: Optional[int] = None) -> None:
+        try:
+            if step is None:
+                self.mlflow.log_metric(name, value)
+            else:
+                self.mlflow.log_metric(name, value, step=step)
+        except TypeError:
+            self.mlflow.log_metric(name, value)
+
+    def _log_once_artifacts(self, root: Path, relative_paths: Dict[str, str]) -> None:
+        for relative_path, artifact_path in relative_paths.items():
+            path = root / relative_path
+            if path.exists():
+                self._log_artifact_once(path, artifact_path=artifact_path)
+
+    def _log_matching_artifacts_once(self, root: Path, pattern: str, artifact_path: str) -> None:
+        for path in sorted(root.glob(pattern)):
+            if path.is_file():
+                self._log_artifact_once(path, artifact_path=artifact_path)
+
+    def _log_artifact_once(self, path: Path, artifact_path: str) -> None:
+        key = str(path.resolve())
+        if key in self._logged_once_artifacts:
+            return
+        self.mlflow.log_artifact(str(path), artifact_path=artifact_path)
+        self._logged_once_artifacts.add(key)
 
     def _set_tags(self, tags: Dict[str, Any]) -> None:
         self.mlflow.set_tags(
@@ -197,6 +279,14 @@ class MlflowTrainingTracker:
             self.experiment_name,
             artifact_location=self.artifact_root,
         )
+
+    @staticmethod
+    def _parse_positive_int(value: Optional[str], default: int) -> int:
+        try:
+            parsed = int(value) if value not in (None, "") else default
+        except (TypeError, ValueError):
+            return default
+        return max(1, parsed)
 
 
 class YoloAutoTrainer:
@@ -771,6 +861,7 @@ class YoloAutoTrainer:
         model = YOLO(source_model)
         train_name = f"run_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}"
         with MlflowTrainingTracker(self, dataset, train_name, source_model) as mlflow_run:
+            mlflow_run.register_callbacks(model)
             model.train(
                 data=str(dataset["data_yaml"]),
                 epochs=self.epochs,
