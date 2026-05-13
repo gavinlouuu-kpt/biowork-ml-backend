@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
+from urllib.parse import urlsplit, urlunsplit
 from xml.etree import ElementTree as ET
 
 import requests
@@ -17,6 +18,18 @@ from control_models.base import MODEL_ROOT, _model_cache
 from utils.mask_geometry import brush_region_bbox
 
 logger = logging.getLogger(__name__)
+
+SUPPORTED_IMAGE_SUFFIXES = {
+    ".bmp",
+    ".dng",
+    ".jpeg",
+    ".jpg",
+    ".mpo",
+    ".png",
+    ".tif",
+    ".tiff",
+    ".webp",
+}
 
 
 @dataclass
@@ -62,7 +75,13 @@ class YoloAutoTrainer:
                 "project_id": self.project_id,
             }
 
-        dataset = self._build_dataset(tasks, controls)
+        ls_host, ls_access_token = self._resolve_credentials()
+        dataset = self._build_dataset(
+            tasks,
+            controls,
+            ls_host=ls_host,
+            ls_access_token=ls_access_token,
+        )
         if dataset["num_samples"] == 0:
             return {
                 "status": "skipped",
@@ -235,7 +254,13 @@ class YoloAutoTrainer:
                 )
         return controls
 
-    def _build_dataset(self, tasks: List[Dict], controls: Dict[str, ControlSpec]) -> Dict:
+    def _build_dataset(
+        self,
+        tasks: List[Dict],
+        controls: Dict[str, ControlSpec],
+        ls_host: Optional[str] = None,
+        ls_access_token: Optional[str] = None,
+    ) -> Dict:
         run_stamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
         dataset_dir = self.project_root / "datasets" / run_stamp
         images_train = dataset_dir / "images" / "train"
@@ -252,7 +277,13 @@ class YoloAutoTrainer:
         samples: List[Tuple[Path, List[str]]] = []
         has_polygon = False
         for task in tasks:
-            label_lines, image_path, sample_has_polygon = self._build_sample(task, controls, class_map)
+            label_lines, image_path, sample_has_polygon = self._build_sample(
+                task,
+                controls,
+                class_map,
+                ls_host=ls_host,
+                ls_access_token=ls_access_token,
+            )
             if not image_path:
                 continue
             has_polygon = has_polygon or sample_has_polygon
@@ -303,7 +334,7 @@ class YoloAutoTrainer:
 
         for idx, (src_image, label_lines) in enumerate(samples):
             split = "train" if idx < num_train else "val"
-            image_name = f"{idx:06d}_{self._safe_name(src_image.name)}"
+            image_name = f"{idx:06d}_{self._safe_name(src_image.name)}{self._image_suffix(src_image)}"
             target_image = (images_train if split == "train" else images_val) / image_name
             target_label = (labels_train if split == "train" else labels_val) / (
                 Path(image_name).stem + ".txt"
@@ -360,7 +391,12 @@ class YoloAutoTrainer:
         return names
 
     def _build_sample(
-        self, task: Dict, controls: Dict[str, ControlSpec], class_map: Dict[str, int]
+        self,
+        task: Dict,
+        controls: Dict[str, ControlSpec],
+        class_map: Dict[str, int],
+        ls_host: Optional[str] = None,
+        ls_access_token: Optional[str] = None,
     ) -> Tuple[List[str], Optional[Path], bool]:
         annotations = task.get("annotations") or []
         if not annotations:
@@ -411,11 +447,12 @@ class YoloAutoTrainer:
                 if not image_url:
                     return [], None, False
                 task_id = task.get("id")
+                resolved_host = ls_host or self.backend.get("ls_host")
                 local = self.backend.get_local_path(
-                    image_url,
+                    self._normalize_label_studio_media_url(image_url, resolved_host),
                     task_id=task_id,
-                    ls_host=self.backend.get("ls_host"),
-                    ls_access_token=self.backend.get("ls_access_token"),
+                    ls_host=resolved_host,
+                    ls_access_token=ls_access_token or self.backend.get("ls_access_token"),
                 )
                 image_path = Path(local)
 
@@ -497,6 +534,55 @@ class YoloAutoTrainer:
             "height": (float(bbox["height"]) / height) * 100.0,
         }
         return self._rectangle_to_yolo_line(class_id, rectangle_value)
+
+    @staticmethod
+    def _normalize_label_studio_media_url(url: str, ls_host: Optional[str]) -> str:
+        """Route Label Studio resolve URLs through the credentialed internal host."""
+        if not url or not ls_host:
+            return url
+
+        parsed_url = urlsplit(url)
+        parsed_host = urlsplit(ls_host.rstrip("/"))
+        if not parsed_url.scheme or not parsed_url.netloc or not parsed_host.scheme or not parsed_host.netloc:
+            return url
+
+        if "/tasks/" not in parsed_url.path or "/resolve/" not in parsed_url.path:
+            return url
+
+        return urlunsplit(
+            (
+                parsed_host.scheme,
+                parsed_host.netloc,
+                parsed_url.path,
+                parsed_url.query,
+                parsed_url.fragment,
+            )
+        )
+
+    @staticmethod
+    def _image_suffix(path: Path) -> str:
+        suffix = path.suffix.lower()
+        if suffix in SUPPORTED_IMAGE_SUFFIXES:
+            return ""
+
+        try:
+            header = path.read_bytes()[:16]
+        except OSError:
+            return ".jpg"
+
+        if header.startswith(b"\x89PNG\r\n\x1a\n"):
+            return ".png"
+        if header.startswith(b"\xff\xd8\xff"):
+            return ".jpg"
+        if header.startswith((b"GIF87a", b"GIF89a")):
+            return ".gif"
+        if header.startswith(b"RIFF") and header[8:12] == b"WEBP":
+            return ".webp"
+        if header.startswith((b"II*\x00", b"MM\x00*")):
+            return ".tif"
+        if header.startswith(b"BM"):
+            return ".bmp"
+        return ".jpg"
 
     def _train(self, dataset: Dict) -> Dict:
         task = dataset["task"]
