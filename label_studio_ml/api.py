@@ -82,11 +82,8 @@ def _predict():
     if access_token:
         model.set("ls_access_token", access_token)
 
-    # model.use_label_config(label_config)
-
     response = model.predict(tasks, context=context, **params)
 
-    # if there is no model version we will take the default
     if isinstance(response, ModelResponse):
         if not response.has_model_version():
             mv = model.model_version
@@ -133,7 +130,20 @@ def _setup():
 @_server.route('/train', methods=['POST'])
 @exception_handler
 def _train():
-    """Legacy train endpoint used by Label Studio ML API connector."""
+    """Trigger YOLO retraining for a project.
+
+    Accepts the standard Label Studio webhook payload *and* an extended
+    payload sent by the Dagster ``yolo_trained_model`` asset::
+
+        {
+            "project": "<project_id>",
+            "label_config": "<xml>",
+            "annotations": [ <task objects with .annotations populated> ]
+        }
+
+    When ``annotations`` is present the training run uses those tasks
+    directly, skipping the internal Label Studio fetch.
+    """
     data = request.json or {}
     project = str(data.get('project'))
     project_id = project.split('.', 1)[0] if project else None
