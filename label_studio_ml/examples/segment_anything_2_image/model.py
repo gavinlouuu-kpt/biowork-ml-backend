@@ -9,6 +9,7 @@ import re
 from uuid import uuid4
 from label_studio_ml.model import LabelStudioMLBase
 from label_studio_ml.response import ModelResponse
+from label_studio_ml.exceptions import ValidationError
 from label_studio_sdk.converter import brush
 from label_studio_sdk._extensions.label_studio_tools.core.utils.io import get_local_path
 from PIL import Image
@@ -269,6 +270,412 @@ class NewModel(LabelStudioMLBase):
             'nms_iou_thresh': nms_iou_thresh,
         }
 
+    def _prompt_validation_error(self, message: str):
+        raise ValidationError(f"Invalid SAM2 prompt payload: {message}")
+
+    def _to_finite_float(self, value, path: str) -> float:
+        try:
+            number = float(value)
+        except (TypeError, ValueError):
+            self._prompt_validation_error(f"{path} must be a number")
+        if not np.isfinite(number):
+            self._prompt_validation_error(f"{path} must be a finite number")
+        return number
+
+    def _parse_boolish(self, value, path: str) -> bool:
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, (int, float)) and value in (0, 1):
+            return bool(value)
+        if isinstance(value, str):
+            normalized = value.strip().lower()
+            if normalized in ('1', 'true', 'yes', 'positive', 'foreground'):
+                return True
+            if normalized in ('0', 'false', 'no', 'negative', 'background'):
+                return False
+        self._prompt_validation_error(f"{path} must be a boolean or positive/negative value")
+
+    def _coordinate_system(self, value, path: str) -> str:
+        if value is None:
+            return 'percent'
+        normalized = str(value).strip().lower()
+        if normalized in ('percent', 'percentage', 'perc'):
+            return 'percent'
+        if normalized in ('pixel', 'pixels', 'px'):
+            return 'pixel'
+        if normalized in ('normalized', 'relative', 'ratio'):
+            return 'normalized'
+        self._prompt_validation_error(
+            f"{path} must be one of: percent, pixel, normalized"
+        )
+
+    def _dimension_pair_from_context(self, context: Dict, payload: Dict) -> tuple:
+        payload = payload or {}
+        context = context or {}
+
+        def first_value(*keys):
+            for source in (payload, context):
+                for key in keys:
+                    value = source.get(key)
+                    if value is not None:
+                        return value
+            return None
+
+        def payload_width_height_are_box_geometry() -> bool:
+            return (
+                self._prompt_item_kind(payload) == 'box'
+                and all(key in payload for key in ('x', 'y', 'width', 'height'))
+                and not any(key in payload for key in ('original_width', 'original_height', 'image_width', 'image_height'))
+            )
+
+        width = first_value('original_width', 'image_width')
+        height = first_value('original_height', 'image_height')
+        if width is None:
+            width = context.get('width')
+        if height is None:
+            height = context.get('height')
+        if not payload_width_height_are_box_geometry():
+            if width is None:
+                width = payload.get('width')
+            if height is None:
+                height = payload.get('height')
+
+        width = self._to_finite_float(width, 'prompts.original_width')
+        height = self._to_finite_float(height, 'prompts.original_height')
+        if width <= 0 or height <= 0:
+            self._prompt_validation_error('image dimensions must be greater than zero')
+        return int(round(width)), int(round(height))
+
+    def _coord_to_pixels(self, value, size: int, coordinate_system: str, path: str) -> float:
+        number = self._to_finite_float(value, path)
+        if coordinate_system == 'percent':
+            if number < 0 or number > 100:
+                self._prompt_validation_error(f"{path} percent value must be between 0 and 100")
+            return number * size / 100.0
+        if coordinate_system == 'normalized':
+            if number < 0 or number > 1:
+                self._prompt_validation_error(f"{path} normalized value must be between 0 and 1")
+            return number * size
+        if number < 0 or number > size:
+            self._prompt_validation_error(f"{path} pixel value must be between 0 and {size}")
+        return number
+
+    def _extract_prompt_label(self, value, selected_label: Optional[str]) -> Optional[str]:
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+        if isinstance(value, list) and value and isinstance(value[0], str):
+            return value[0]
+        return selected_label
+
+    def _prompt_item_kind(self, prompt: Dict) -> str:
+        for key in ('prompt_type', 'promptType', 'kind', 'type'):
+            value = prompt.get(key)
+            if not isinstance(value, str):
+                continue
+            normalized = value.strip().lower()
+            if normalized in ('box', 'bbox', 'rect', 'rectangle', 'rectanglelabels'):
+                return 'box'
+            if normalized in ('point', 'points', 'keypoint', 'keypointlabels'):
+                return 'point'
+        if prompt.get('box') is not None or all(key in prompt for key in ('x1', 'y1', 'x2', 'y2')):
+            return 'box'
+        if all(key in prompt for key in ('x', 'y', 'width', 'height')) and not any(
+            key in prompt for key in ('is_positive', 'positive', 'polarity')
+        ):
+            return 'box'
+        return 'point'
+
+    def _point_label_value(self, prompt: Dict, path: str) -> int:
+        if 'is_positive' in prompt:
+            return 1 if self._parse_boolish(prompt.get('is_positive'), f'{path}.is_positive') else 0
+        if 'positive' in prompt:
+            return 1 if self._parse_boolish(prompt.get('positive'), f'{path}.positive') else 0
+        if 'polarity' in prompt:
+            return 1 if self._parse_boolish(prompt.get('polarity'), f'{path}.polarity') else 0
+        if prompt.get('label') in (0, 1, '0', '1'):
+            return int(prompt.get('label'))
+        if 'type' in prompt:
+            prompt_type = prompt.get('type')
+            if isinstance(prompt_type, str) and prompt_type.strip().lower() in ('point', 'points', 'keypoint', 'keypointlabels'):
+                return 1
+            return 1 if self._parse_boolish(prompt_type, f'{path}.type') else 0
+        return 1
+
+    def _point_xy(self, prompt: Dict, image_width: int, image_height: int, default_coordinate_system: str, path: str):
+        coordinate_system = self._coordinate_system(
+            prompt.get('coordinate_system', default_coordinate_system),
+            f'{path}.coordinate_system',
+        )
+        x = prompt.get('x')
+        y = prompt.get('y')
+        if x is None or y is None:
+            coords = prompt.get('point', prompt.get('coordinates'))
+            if isinstance(coords, (list, tuple)) and len(coords) == 2:
+                x, y = coords
+        if x is None or y is None:
+            self._prompt_validation_error(f'{path} must include x/y or point coordinates')
+        return [
+            self._coord_to_pixels(x, image_width, coordinate_system, f'{path}.x'),
+            self._coord_to_pixels(y, image_height, coordinate_system, f'{path}.y'),
+        ]
+
+    def _box_xyxy(self, prompt: Dict, image_width: int, image_height: int, default_coordinate_system: str, path: str):
+        coordinate_system = self._coordinate_system(
+            prompt.get('coordinate_system', default_coordinate_system),
+            f'{path}.coordinate_system',
+        )
+        rotation = prompt.get('rotation', 0)
+        if rotation not in (0, 0.0, None):
+            self._prompt_validation_error(f'{path}.rotation is not supported for SAM2 box prompts')
+
+        raw_box = prompt.get('box')
+        if isinstance(raw_box, (list, tuple)) and len(raw_box) == 4:
+            x1, y1, x2, y2 = raw_box
+            x1 = self._coord_to_pixels(x1, image_width, coordinate_system, f'{path}.box[0]')
+            y1 = self._coord_to_pixels(y1, image_height, coordinate_system, f'{path}.box[1]')
+            x2 = self._coord_to_pixels(x2, image_width, coordinate_system, f'{path}.box[2]')
+            y2 = self._coord_to_pixels(y2, image_height, coordinate_system, f'{path}.box[3]')
+        elif all(key in prompt for key in ('x1', 'y1', 'x2', 'y2')):
+            x1 = self._coord_to_pixels(prompt.get('x1'), image_width, coordinate_system, f'{path}.x1')
+            y1 = self._coord_to_pixels(prompt.get('y1'), image_height, coordinate_system, f'{path}.y1')
+            x2 = self._coord_to_pixels(prompt.get('x2'), image_width, coordinate_system, f'{path}.x2')
+            y2 = self._coord_to_pixels(prompt.get('y2'), image_height, coordinate_system, f'{path}.y2')
+        elif all(key in prompt for key in ('x', 'y', 'width', 'height')):
+            x1 = self._coord_to_pixels(prompt.get('x'), image_width, coordinate_system, f'{path}.x')
+            y1 = self._coord_to_pixels(prompt.get('y'), image_height, coordinate_system, f'{path}.y')
+            width = self._coord_to_pixels(prompt.get('width'), image_width, coordinate_system, f'{path}.width')
+            height = self._coord_to_pixels(prompt.get('height'), image_height, coordinate_system, f'{path}.height')
+            x2 = x1 + width
+            y2 = y1 + height
+        else:
+            self._prompt_validation_error(f'{path} must include box, x1/y1/x2/y2, or x/y/width/height')
+
+        if x2 <= x1 or y2 <= y1:
+            self._prompt_validation_error(f'{path} must describe a box with positive width and height')
+        if x1 < 0 or y1 < 0 or x2 > image_width or y2 > image_height:
+            self._prompt_validation_error(f'{path} must be within the image bounds')
+        return [x1, y1, x2, y2]
+
+    def _combined_box(self, boxes: List[List[float]]):
+        if not boxes:
+            return None
+        return [
+            min(box[0] for box in boxes),
+            min(box[1] for box in boxes),
+            max(box[2] for box in boxes),
+            max(box[3] for box in boxes),
+        ]
+
+    def _get_default_label(self, from_name: str) -> str:
+        try:
+            control = self.label_interface.get_control(from_name)
+            label_names = list(control.labels_attrs.keys()) if control and control.labels_attrs else []
+            if label_names:
+                return label_names[0]
+        except Exception:
+            pass
+        return 'Object'
+
+    def _normalize_prompt_payload(self, context: Optional[Dict], default_label: str) -> Dict:
+        if not isinstance(context, dict):
+            return {
+                'empty': True,
+                'image_width': 0,
+                'image_height': 0,
+                'point_coords': [],
+                'point_labels': [],
+                'input_box': None,
+                'selected_label': default_label,
+            }
+
+        if 'prompts' in context:
+            return self._normalize_structured_prompts(context, context.get('prompts'), default_label)
+        if 'prompt' in context:
+            return self._normalize_structured_prompts(context, context.get('prompt'), default_label)
+        return self._normalize_label_studio_results(context, default_label)
+
+    def _normalize_structured_prompts(self, context: Dict, payload, default_label: str) -> Dict:
+        if isinstance(payload, list):
+            payload = {'items': payload}
+        if not isinstance(payload, dict):
+            self._prompt_validation_error('prompts must be an object')
+
+        selected_label = self._extract_prompt_label(payload.get('label'), default_label)
+        points = payload.get('points', [])
+        boxes = payload.get('boxes', [])
+        items = payload.get('items', [])
+        if not isinstance(points, list):
+            self._prompt_validation_error('prompts.points must be a list')
+        if not isinstance(boxes, list):
+            self._prompt_validation_error('prompts.boxes must be a list')
+        if not isinstance(items, list):
+            self._prompt_validation_error('prompts.items must be a list')
+        for index, item in enumerate(items):
+            if not isinstance(item, dict):
+                self._prompt_validation_error(f'prompts.items[{index}] must be an object')
+            if self._prompt_item_kind(item) == 'box':
+                boxes = boxes + [item]
+            else:
+                points = points + [item]
+
+        has_nested_prompts = bool(points or boxes or items)
+        has_point_shorthand = payload.get('point') is not None
+        has_box_shorthand = payload.get('box') is not None
+        has_inline_geometry = (
+            all(key in payload for key in ('x', 'y'))
+            or all(key in payload for key in ('x1', 'y1', 'x2', 'y2'))
+        )
+        if not has_nested_prompts and not has_point_shorthand and not has_box_shorthand and has_inline_geometry:
+            if self._prompt_item_kind(payload) == 'box':
+                boxes = boxes + [payload]
+            else:
+                points = points + [payload]
+
+        if payload.get('point') is not None:
+            point_prompt = {'point': payload.get('point')}
+            for key in ('coordinate_system', 'is_positive', 'positive', 'polarity', 'type', 'label_name'):
+                if key in payload:
+                    point_prompt[key] = payload.get(key)
+            points = points + [point_prompt]
+        if payload.get('box') is not None:
+            box_prompt = {'box': payload.get('box')}
+            for key in ('coordinate_system', 'rotation', 'label_name'):
+                if key in payload:
+                    box_prompt[key] = payload.get(key)
+            boxes = boxes + [box_prompt]
+
+        if not points and not boxes:
+            return {
+                'empty': True,
+                'image_width': 0,
+                'image_height': 0,
+                'point_coords': [],
+                'point_labels': [],
+                'input_box': None,
+                'selected_label': selected_label,
+            }
+
+        image_width, image_height = self._dimension_pair_from_context(context, payload)
+        coordinate_system = self._coordinate_system(
+            payload.get('coordinate_system', context.get('coordinate_system')),
+            'prompts.coordinate_system',
+        )
+
+        point_coords = []
+        point_labels = []
+        for index, point in enumerate(points):
+            path = f'prompts.points[{index}]'
+            if not isinstance(point, dict):
+                self._prompt_validation_error(f'{path} must be an object')
+            point_coords.append(self._point_xy(point, image_width, image_height, coordinate_system, path))
+            point_labels.append(self._point_label_value(point, path))
+            selected_label = self._extract_prompt_label(point.get('label_name'), selected_label)
+
+        parsed_boxes = []
+        for index, box in enumerate(boxes):
+            path = f'prompts.boxes[{index}]'
+            if not isinstance(box, dict):
+                self._prompt_validation_error(f'{path} must be an object')
+            parsed_boxes.append(self._box_xyxy(box, image_width, image_height, coordinate_system, path))
+            selected_label = self._extract_prompt_label(box.get('label_name'), selected_label)
+
+        if not point_coords and not parsed_boxes:
+            return {
+                'empty': True,
+                'image_width': image_width,
+                'image_height': image_height,
+                'point_coords': [],
+                'point_labels': [],
+                'input_box': None,
+                'selected_label': selected_label,
+            }
+        if point_labels and not any(label == 1 for label in point_labels) and not parsed_boxes:
+            self._prompt_validation_error('at least one positive point or box prompt is required')
+
+        return {
+            'empty': False,
+            'image_width': image_width,
+            'image_height': image_height,
+            'point_coords': point_coords,
+            'point_labels': point_labels,
+            'input_box': self._combined_box(parsed_boxes),
+            'selected_label': selected_label,
+        }
+
+    def _normalize_label_studio_results(self, context: Dict, default_label: str) -> Dict:
+        results = context.get('result') or []
+        if not isinstance(results, list):
+            self._prompt_validation_error('context.result must be a list')
+        if not results:
+            return {
+                'empty': True,
+                'image_width': 0,
+                'image_height': 0,
+                'point_coords': [],
+                'point_labels': [],
+                'input_box': None,
+                'selected_label': default_label,
+            }
+
+        image_width = int(round(self._to_finite_float(results[0].get('original_width'), 'context.result[0].original_width')))
+        image_height = int(round(self._to_finite_float(results[0].get('original_height'), 'context.result[0].original_height')))
+        if image_width <= 0 or image_height <= 0:
+            self._prompt_validation_error('context.result image dimensions must be greater than zero')
+
+        point_coords = []
+        point_labels = []
+        boxes = []
+        selected_label = default_label
+
+        for index, ctx in enumerate(results):
+            if not isinstance(ctx, dict):
+                self._prompt_validation_error(f'context.result[{index}] must be an object')
+            value = ctx.get('value') or {}
+            if not isinstance(value, dict):
+                self._prompt_validation_error(f'context.result[{index}].value must be an object')
+            ctx_type = ctx.get('type')
+            if ctx_type not in ('keypointlabels', 'rectanglelabels'):
+                continue
+            label_values = value.get(ctx_type) or value.get('labels') or []
+            selected_label = self._extract_prompt_label(label_values, selected_label)
+
+            if ctx_type == 'keypointlabels':
+                x = self._to_finite_float(value.get('x'), f'context.result[{index}].value.x') * image_width / 100.0
+                y = self._to_finite_float(value.get('y'), f'context.result[{index}].value.y') * image_height / 100.0
+                point_coords.append([x, y])
+                point_labels.append(1 if self._parse_boolish(ctx.get('is_positive', True), f'context.result[{index}].is_positive') else 0)
+            elif ctx_type == 'rectanglelabels':
+                x = self._to_finite_float(value.get('x'), f'context.result[{index}].value.x') * image_width / 100.0
+                y = self._to_finite_float(value.get('y'), f'context.result[{index}].value.y') * image_height / 100.0
+                box_width = self._to_finite_float(value.get('width'), f'context.result[{index}].value.width') * image_width / 100.0
+                box_height = self._to_finite_float(value.get('height'), f'context.result[{index}].value.height') * image_height / 100.0
+                if box_width <= 0 or box_height <= 0:
+                    self._prompt_validation_error(f'context.result[{index}] rectangle must have positive width and height')
+                boxes.append([x, y, x + box_width, y + box_height])
+
+        if not point_coords and not boxes:
+            return {
+                'empty': True,
+                'image_width': image_width,
+                'image_height': image_height,
+                'point_coords': [],
+                'point_labels': [],
+                'input_box': None,
+                'selected_label': selected_label,
+            }
+        if point_labels and not any(label == 1 for label in point_labels) and not boxes:
+            self._prompt_validation_error('at least one positive point or box prompt is required')
+
+        return {
+            'empty': False,
+            'image_width': image_width,
+            'image_height': image_height,
+            'point_coords': point_coords,
+            'point_labels': point_labels,
+            'input_box': self._combined_box(boxes),
+            'selected_label': selected_label,
+        }
+
     def get_results(self, masks, probs, width, height, from_name, to_name, label,
                     polygon_from_name: Optional[str] = None,
                     response_type: Optional[str] = None,
@@ -432,7 +839,7 @@ class NewModel(LabelStudioMLBase):
     def _sam_predict(self, img_url, point_coords=None, point_labels=None, input_box=None, task=None):
         self.set_image(img_url, task)
         point_coords = np.array(point_coords, dtype=np.float32) if point_coords else None
-        point_labels = np.array(point_labels, dtype=np.float32) if point_labels else None
+        point_labels = np.array(point_labels, dtype=np.int32) if point_labels else None
         input_box = np.array(input_box, dtype=np.float32) if input_box else None
 
         masks, scores, logits = predictor.predict(
@@ -465,8 +872,11 @@ class NewModel(LabelStudioMLBase):
         except Exception:
             polygon_from_name = None
 
-        # Preannotation path (no context yet)
-        if not context or not context.get('result'):
+        # Preannotation path (no interactive context yet)
+        has_interactive_context = isinstance(context, dict) and (
+            'result' in context or 'prompts' in context or 'prompt' in context
+        )
+        if not has_interactive_context:
             # Resolve full config for preannotation path
             cfg = self._resolve_config(**kwargs)
             if not cfg['preannotate']:
@@ -568,28 +978,17 @@ class NewModel(LabelStudioMLBase):
             )
             return ModelResponse(predictions=predictions)
 
-        image_width = context['result'][0]['original_width']
-        image_height = context['result'][0]['original_height']
+        default_label = self._get_default_label(from_name)
+        prompt_payload = self._normalize_prompt_payload(context, default_label)
+        if prompt_payload['empty']:
+            return self._empty_prediction_response()
 
-        # collect context information
-        point_coords = []
-        point_labels = []
-        input_box = None
-        selected_label = None
-        for ctx in context['result']:
-            x = ctx['value']['x'] * image_width / 100
-            y = ctx['value']['y'] * image_height / 100
-            ctx_type = ctx['type']
-            selected_label = ctx['value'][ctx_type][0]
-            if ctx_type == 'keypointlabels':
-                point_labels.append(int(ctx.get('is_positive', 0)))
-                point_coords.append([int(x), int(y)])
-            elif ctx_type == 'rectanglelabels':
-                box_width = ctx['value']['width'] * image_width / 100
-                box_height = ctx['value']['height'] * image_height / 100
-                input_box = [int(x), int(y), int(box_width + x), int(box_height + y)]
-
-        print(f'Point coords are {point_coords}, point labels are {point_labels}, input box is {input_box}')
+        image_width = prompt_payload['image_width']
+        image_height = prompt_payload['image_height']
+        point_coords = prompt_payload['point_coords']
+        point_labels = prompt_payload['point_labels']
+        input_box = prompt_payload['input_box']
+        selected_label = prompt_payload['selected_label']
 
         img_url = tasks[0]['data'][value]
         predictor_results = self._sam_predict(

@@ -24,6 +24,10 @@ def answer(status=0, msg='', result=None):
     return make_response(jsonify(a), status)
 
 
+class ValidationError(Exception):
+    """Client input validation error for ML backend requests."""
+
+
 # make an answer as exception
 class AnswerException(Exception):
     def __init__(self, status, msg='', result=None):
@@ -38,12 +42,21 @@ def exception_handler(f):
         try:
             return f(*args, **kwargs)
 
+        except ValidationError as e:
+            logger.warning(str(e))
+            body = {}
+            if hasattr(exception_f, 'request_id'):
+                body['request_id'] = exception_f.request_id
+            return answer(400, str(e), body)
+
         except AnswerException as e:
             traceback = tb.format_exc()
             logger.error(traceback)
+            if e.result is None:
+                e.result = {}
             if 'traceback' not in e.result:
                 e.result['traceback'] = traceback
-            if hasattr(exception_f, 'request_id') and not e.result['request_id']:
+            if hasattr(exception_f, 'request_id') and not e.result.get('request_id'):
                 e.result['request_id'] = exception_f.request_id
 
             return answer(e.status, e.msg, e.result)
